@@ -43,7 +43,7 @@ func TestLoad_ConDefaults(t *testing.T) {
 		t.Errorf("defaults = %v %v %v", c.HTTPTimeout, c.MaxRetries, c.RetryBaseDelay)
 	}
 	if c.DateFormat != "02/01/2006" {
-		t.Errorf("date format = %q, el default observado en Tango es dd/MM/yyyy", c.DateFormat)
+		t.Errorf("date format = %q, el default (hipotesis) es dd/MM/yyyy", c.DateFormat)
 	}
 }
 

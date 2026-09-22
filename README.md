@@ -37,7 +37,7 @@ Todo por variables de entorno. Nunca hay secretos en el codigo ni en el repo.
 | `TANGO_HTTP_TIMEOUT` | no | `60s` | timeout por request |
 | `TANGO_MAX_RETRIES` | no | `3` | reintentos ante errores transitorios |
 | `TANGO_RETRY_BASE_DELAY` | no | `500ms` | base del backoff exponencial con jitter |
-| `TANGO_DATE_FORMAT` | no | `02/01/2006` | layout Go de `fromDate`/`toDate`. `dd/MM/yyyy` es el formato observado en Tango |
+| `TANGO_DATE_FORMAT` | no | `02/01/2006` | layout Go de `fromDate`/`toDate`. `dd/MM/yyyy` es **hipotesis sin demostrar**, ver *Riesgos* |
 
 Se pueden cargar desde un archivo (`--env-file`, por defecto `.env` del directorio
 actual). El entorno real siempre gana sobre el archivo.
@@ -104,6 +104,32 @@ El log va a stderr y el resumen a stdout: se pueden separar.
 
 Exit code `0` si termino bien, `1` si fallo.
 
+## Como demostrar el filtro de fechas
+
+Esta es la prueba pendiente que cierra la fase 1. Hay que elegir **un dia cuyo
+numero sea mayor a 12** (asi no puede interpretarse como mes) **y del que
+sepamos que hubo ventas**. Ambas condiciones son necesarias.
+
+```bash
+mylos-tango-agent sync-sales --from 19/09/2026 --to 19/09/2026 \
+  --page-size 5 --max-pages 1 --log-level debug
+```
+
+Tres resultados posibles, y que significa cada uno:
+
+| Resultado | Significa |
+|---|---|
+| filas con `FECHA_DE_EMISION` = `2026-09-19` | `dd/MM/yyyy` confirmado end-to-end. Unknown cerrado. |
+| **0 filas** | **No concluye nada.** Puede ser un dia sin ventas. Repetir con otro dia > 12 donde haya ventas seguras. No cambiar el formato por esto. |
+| filas de **otra fecha** | El filtro no se comporta como asumimos. **Parar e investigar**, no seguir construyendo encima. |
+
+El agente avisa solo en el tercer caso: si las fechas observadas caen fuera del
+rango pedido, el resumen imprime un `AVISO` explicito.
+
+Conviene correr la prueba con **la UI de Tango cerrada**. Asi se demuestran dos
+cosas de una: que el agente llega al puerto 17000, y que la API vive
+independientemente de una sesion interactiva de Tango.
+
 ## Compilar
 
 Requiere Go 1.24+. Cero dependencias externas: no hay `go.sum` porque no hay que descargar nada.
@@ -164,9 +190,18 @@ cantidades e importes. Es PII y es informacion comercial.
    a proposito. La solucion va a ser **idempotencia del lado de MYLOS**
    (que reprocesar la misma fila no duplique nada) mas **ventanas de tiempo
    solapadas** entre corridas, y se diseña cuando exista el contrato de MYLOS.
-2. **Formato de `fromDate`/`toDate`**: el default `02/01/2006` (`dd/MM/yyyy`) es
-   lo observado en Tango, pero no esta verificado contra el server real todavia.
-   `TANGO_DATE_FORMAT` permite cambiarlo sin recompilar.
+2. **Semantica del filtro de fechas: SIN DEMOSTRAR.** Es el unknown mas
+   importante que queda abierto. El default `02/01/2006` (`dd/MM/yyyy`) es una
+   **hipotesis de trabajo, no un hecho verificado**.
+
+   La anomalia concreta: la unica respuesta real que tenemos devolvio
+   `"FECHA_DE_EMISION": "2026-01-02T00:00:00"` para lo que se creia un rango de
+   **septiembre**. `2026-01-02` es exactamente el string ambiguo entre
+   `dd/MM` y `MM/dd`. Puede haber sido otra corrida, un filtro que no se
+   aplico, o una semantica del endpoint que todavia no entendemos.
+
+   **`0 filas` no demuestra que el formato este mal**: puede ser simplemente un
+   dia sin ventas. Ver *Como demostrar el filtro de fechas*.
 3. **Forma de `exceptionInfo`**: solo lo vimos en `null`. Se guarda como JSON
    crudo y se muestra tal cual en el error.
 4. **Zona horaria de `FECHA_DE_EMISION`**: viene sin offset (`...T00:00:00`). Se

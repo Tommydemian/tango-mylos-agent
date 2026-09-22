@@ -157,6 +157,13 @@ func runSyncSales(args []string) error {
 	)
 
 	summary, err := sync.FetchSales(ctx, client, opts, log, sink)
+	defer func() {
+		// Diagnostico del unknown abierto: si las fechas que devolvio Tango
+		// caen fuera del rango pedido, el filtro no hace lo que asumimos.
+		if msg := rangoSospechoso(summary.MinFecha, summary.MaxFecha, fromDate, toDate); msg != "" {
+			fmt.Fprintln(os.Stderr, msg)
+		}
+	}()
 	if err != nil {
 		// Si alcanzo a leer algo, el resumen parcial sirve para diagnosticar.
 		if summary.Pages > 0 {
@@ -205,6 +212,28 @@ func printSummary(s sync.Summary, opts sync.Options, out string) {
 		fmt.Println("         Puede ser actividad en Tango durante la paginacion (ver README).")
 	}
 	fmt.Println()
+}
+
+// rangoSospechoso compara las fechas observadas contra el rango pedido usando
+// solo el prefijo AAAA-MM-DD, sin interpretar hora ni zona (no sabemos que
+// representan). Devuelve "" si todo cierra o si no hay con que comparar.
+func rangoSospechoso(minFecha, maxFecha string, from, to time.Time) string {
+	if len(minFecha) < 10 || len(maxFecha) < 10 {
+		return ""
+	}
+	desde := from.Format("2006-01-02")
+	hasta := to.Format("2006-01-02")
+	if minFecha[:10] >= desde && maxFecha[:10] <= hasta {
+		return ""
+	}
+	return fmt.Sprintf(
+		"\nAVISO IMPORTANTE: Tango devolvio filas con FECHA_DE_EMISION fuera del rango pedido.\n"+
+			"  pedido    : %s -> %s\n"+
+			"  observado : %s -> %s\n"+
+			"  El filtro de fechas no se comporta como asumimos (formato de fromDate/toDate\n"+
+			"  o semantica del endpoint). Parar e investigar antes de seguir. Ver README,\n"+
+			"  seccion \"Como demostrar el filtro de fechas\".",
+		desde, hasta, minFecha[:10], maxFecha[:10])
 }
 
 func orGuion(v string) string {

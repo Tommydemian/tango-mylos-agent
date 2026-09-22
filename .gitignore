@@ -13,3 +13,6 @@ mylos-tango-agent.exe
 # salidas de inspeccion
 *.jsonl
 /out/
+
+# config personal del editor
+.vscode/

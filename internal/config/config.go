@@ -27,8 +27,8 @@ type Config struct {
 	RetryBaseDelay time.Duration
 
 	// DateFormat es el layout Go con el que se serializan fromDate/toDate.
-	// Default 02/01/2006 (dd/MM/yyyy), que es lo observado en Tango.
-	// Sigue siendo configurable por si algun server espera otra cosa.
+	// Default 02/01/2006 (dd/MM/yyyy): hipotesis, no hecho confirmado.
+	// Configurable justamente porque todavia hay que demostrarlo.
 	DateFormat string
 }
 
@@ -36,7 +36,8 @@ const (
 	defaultHTTPTimeout    = 60 * time.Second
 	defaultMaxRetries     = 3
 	defaultRetryBaseDelay = 500 * time.Millisecond
-	// Formato observado empiricamente en Tango (dd/MM/yyyy).
+	// dd/MM/yyyy. Es la hipotesis de trabajo, NO esta verificada end-to-end
+	// contra el server real: ver "Riesgos y unknowns" en el README.
 	defaultDateFormat = "02/01/2006"
 )
 

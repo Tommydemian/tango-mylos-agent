@@ -106,6 +106,9 @@ Se reintenta transporte, 5xx, 429 y 408. No se reintenta el resto de 4xx,
 - **`--out` es opt-in y siempre lo va a ser.** El JSONL tiene PII y datos
   comerciales reales (razon social, vendedor, articulos, importes). No lo
   actives por defecto, no lo dejes en rutas compartidas, no lo commitees.
+- **No degradar un unknown a hecho por conveniencia.** Si algo no se demostro
+  contra el server real, en el codigo y en los docs va como hipotesis. Vale
+  tambien para lo que se afirme en una conversacion.
 - **No inventar agregados con semantica incierta.** Las sumas de `TOTAL` /
   `CANTIDAD` estan detras de `--sum-amounts` hasta que sepamos que representa
   `TOTAL`. Un numero dudoso en un resumen se lee como verdad.
@@ -140,9 +143,13 @@ make build-windows    # bin/mylos-tango-agent.exe
    detecta a posteriori (`Rows != TotalCountReported` -> aviso en el resumen).
    Se resuelve despues, con **idempotencia en MYLOS + ventanas solapadas**,
    cuando exista el contrato. No agregar snapshots, locks ni cursores ahora.
-2. Formato de `fromDate`/`toDate`: default `02/01/2006` (`dd/MM/yyyy`), que es
-   lo observado en Tango. Configurable por `TANGO_DATE_FORMAT`. Falta la
-   verificacion contra el server real.
+2. **Semantica del filtro de fechas: SIN DEMOSTRAR.** El default
+   `02/01/2006` (`dd/MM/yyyy`) es una hipotesis, no un hecho. La unica
+   respuesta real que tenemos muestra `"FECHA_DE_EMISION": "2026-01-02T00:00:00"`
+   para lo que se creia un rango de septiembre. Esa fila puede venir de otra
+   corrida, de un filtro que no se aplico, o de una semantica del endpoint que
+   no entendemos. **No tratar dd/MM/yyyy como confirmado hasta la prueba de
+   la seccion siguiente.** Tampoco asumir que 0 filas = formato incorrecto.
 3. Forma de `exceptionInfo` cuando viene poblado: solo lo vimos `null`.
 4. Zona horaria / semantica de `FECHA_DE_EMISION` (viene sin offset).
 5. Si `TOTAL` incluye impuestos y si las notas de credito vienen en negativo.
