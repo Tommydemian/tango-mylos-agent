@@ -1,0 +1,15 @@
+# secretos
+.env
+.env.local
+*.env
+!.env.example
+
+# binarios
+/bin/
+*.exe
+mylos-tango-agent
+mylos-tango-agent.exe
+
+# salidas de inspeccion
+*.jsonl
+/out/
