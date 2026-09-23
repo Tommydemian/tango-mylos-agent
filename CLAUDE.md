@@ -5,6 +5,7 @@ Agente Windows standalone que integra **Tango Punto de Venta on-premise** con
 
 ```
 Tango local :17000  --HTTP LAN-->  mylos-tango-agent.exe  --HTTPS outbound-->  MYLOS API
+GET /Api/GetApiLiveQueryData                    POST /integrations/tango/{customers,sales}/batch
 ```
 
 Regla de arquitectura: **MYLOS cloud nunca se conecta directo a Tango.** El agente
@@ -102,10 +103,23 @@ Respuesta real confirmada:
 Todos paginan hasta `hasNextPage=false`, validan `succeeded`, resumen y
 opcionalmente escriben JSONL (`--out`, o `--out-dir` en `sync`).
 
-**NO existe integracion con MYLOS** y no hay que inventarla. Cuando aparezca el
-contrato real se agrega `internal/mylos/`.
+**El agente es transporte y nada mas.** No mapea, no transforma, no interpreta
+campos (`DESCRIPCION_ADICIONAL` incluido), no deduplica semanticamente. Las
+filas van a MYLOS tal cual salieron de Tango.
 
-Tampoco existen (a proposito, no son deuda): Windows Service, base de datos local,
+Ingesta MYLOS (backend ya en prod):
+- `POST /integrations/tango/customers/batch` y `.../sales/batch`
+- `Authorization: Bearer <MYLOS_INGEST_TOKEN>`; el backend resuelve el tenant
+  por el token, el body NO lleva tenant_id
+- body: `company_id` (num), `process_id` (num), `custom_query_id` (string),
+  `from_date`, `to_date`, `rows` (raw de Tango)
+- respuesta: `{batch_id, received, stored, duplicate}`
+- **`duplicate=true` + `stored=false` es EXITO**, no error: idempotencia por
+  payload_hash del lado del backend
+- **un batch por pagina de Tango**, para no juntar el dataset en memoria
+- no implementar idempotencia local: ya la resuelve el backend
+
+No existen (a proposito, no son deuda): Windows Service, base de datos local,
 scheduler, colas, observabilidad. Se agregan cuando el problema exista.
 
 ## Estructura
@@ -115,6 +129,8 @@ cmd/agent/          CLI (flags, subcomandos, resumenes)
 internal/config/    config por env/archivo + validacion. Config.LogValue() redacta el token
                     SalesProcessID() / CustomersProcessID(): cada comando pide el que usa
 internal/tango/     cliente HTTP: GetApiLiveQueryData[T], retry/backoff, errores tipados
+internal/mylos/     cliente HTTP de ingesta + Uploader (batch por pagina, stats)
+                    retry propio, duplicado del criterio de tango: si cambia uno, revisar el otro
 internal/sync/      paginate[T]() generico (el loop de paginas, uno solo para todos)
                     FetchSales -> SalesSummary; FetchCustomers -> Summary; JSONLWriter
 internal/model/     Envelope[T] / Page[T] / SalesLine / RawRow
@@ -153,6 +169,8 @@ Se reintenta transporte, 5xx, 429 y 408. No se reintenta el resto de 4xx,
   silencio. El sink recibe `json.RawMessage`, no filas tipadas.
 - **Tests sin Tango real**: todo con `httptest`. `go test ./...` tiene que pasar
   offline.
+- **Reintentar un POST solo es seguro por la idempotencia del backend.** Si eso
+  cambiara, hay que revisar la politica de retry de `internal/mylos`.
 - **Sin dependencias externas.** No tener `go.sum` es una feature: el `.exe` se
   audita facil y se compila en cualquier lado.
 - No abstraer por adelantado. Si hay una sola implementacion, no hay interfaz.

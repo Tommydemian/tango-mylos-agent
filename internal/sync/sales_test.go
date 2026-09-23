@@ -133,8 +133,8 @@ func TestFetchSales_RecorreTodasLasPaginas(t *testing.T) {
 	o.SumAmounts = true
 
 	var got []json.RawMessage
-	sum, err := FetchSales(context.Background(), clientFor(t, srv.URL), o, nil, func(raw json.RawMessage) error {
-		got = append(got, raw)
+	sum, err := FetchSales(context.Background(), clientFor(t, srv.URL), o, nil, func(rows []json.RawMessage) error {
+		got = append(got, rows...)
 		return nil
 	})
 	if err != nil {
@@ -307,11 +307,38 @@ func TestFetchSales_ErrorDelSinkCortaLaCorrida(t *testing.T) {
 	srv := fakeTango(t, pages, nil, nil)
 	defer srv.Close()
 
-	_, err := FetchSales(context.Background(), clientFor(t, srv.URL), opts(), nil, func(json.RawMessage) error {
+	_, err := FetchSales(context.Background(), clientFor(t, srv.URL), opts(), nil, func([]json.RawMessage) error {
 		return fmt.Errorf("disco lleno")
 	})
 	if err == nil || !strings.Contains(err.Error(), "disco lleno") {
 		t.Fatalf("esperaba el error del sink, es: %v", err)
+	}
+}
+
+// Sinks encadena y corta en el primero que falla.
+func TestSinks(t *testing.T) {
+	var orden []string
+	a := func([]json.RawMessage) error { orden = append(orden, "a"); return nil }
+	b := func([]json.RawMessage) error { orden = append(orden, "b"); return nil }
+
+	if err := Sinks(a, nil, b)(nil); err != nil {
+		t.Fatalf("Sinks: %v", err)
+	}
+	if strings.Join(orden, ",") != "a,b" {
+		t.Errorf("orden = %v, los nil se saltean y el resto corre en orden", orden)
+	}
+
+	if Sinks() != nil || Sinks(nil, nil) != nil {
+		t.Error("sin sinks activos deberia devolver nil")
+	}
+
+	orden = nil
+	falla := func([]json.RawMessage) error { return fmt.Errorf("boom") }
+	if err := Sinks(a, falla, b)(nil); err == nil {
+		t.Fatal("esperaba el error del sink del medio")
+	}
+	if strings.Join(orden, ",") != "a" {
+		t.Errorf("el sink posterior al que falla no deberia correr: %v", orden)
 	}
 }
 

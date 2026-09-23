@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sort"
 
@@ -40,36 +41,40 @@ func FetchSales(ctx context.Context, c *tango.Client, opts Options, log *slog.Lo
 	}
 	seen := map[string]struct{}{}
 
-	base, err := paginate(ctx, c, opts, log, func(row model.SalesLine) error {
-		if opts.SumAmounts {
-			s.SumTotal += row.Total
-			s.SumCantidad += row.Cantidad
-		}
-		s.RowsPorTipo[row.TipoComprobante]++
-
-		key := row.TipoComprobante + "|" + row.NroComprobante
-		if _, ok := seen[key]; !ok {
-			seen[key] = struct{}{}
-			s.Comprobantes++
-		}
-
-		if row.FechaDeEmision != "" {
-			if s.PrimeraFecha == "" {
-				s.PrimeraFecha = row.FechaDeEmision
+	base, err := paginate(ctx, c, opts, log, func(rows []model.SalesLine) error {
+		raws := make([]json.RawMessage, 0, len(rows))
+		for _, row := range rows {
+			raws = append(raws, row.Raw)
+			if opts.SumAmounts {
+				s.SumTotal += row.Total
+				s.SumCantidad += row.Cantidad
 			}
-			s.UltimaFecha = row.FechaDeEmision
-			// Comparacion lexicografica: sirve porque el formato es ISO de
-			// ancho fijo ("2026-01-02T00:00:00").
-			if s.MinFecha == "" || row.FechaDeEmision < s.MinFecha {
-				s.MinFecha = row.FechaDeEmision
+			s.RowsPorTipo[row.TipoComprobante]++
+
+			key := row.TipoComprobante + "|" + row.NroComprobante
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				s.Comprobantes++
 			}
-			if row.FechaDeEmision > s.MaxFecha {
-				s.MaxFecha = row.FechaDeEmision
+
+			if row.FechaDeEmision != "" {
+				if s.PrimeraFecha == "" {
+					s.PrimeraFecha = row.FechaDeEmision
+				}
+				s.UltimaFecha = row.FechaDeEmision
+				// Comparacion lexicografica: sirve porque el formato es ISO
+				// de ancho fijo ("2026-01-02T00:00:00").
+				if s.MinFecha == "" || row.FechaDeEmision < s.MinFecha {
+					s.MinFecha = row.FechaDeEmision
+				}
+				if row.FechaDeEmision > s.MaxFecha {
+					s.MaxFecha = row.FechaDeEmision
+				}
 			}
 		}
 
 		if sink != nil {
-			return sink(row.Raw)
+			return sink(raws)
 		}
 		return nil
 	})

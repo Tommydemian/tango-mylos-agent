@@ -27,15 +27,20 @@ func NewJSONLWriter(path string) (*JSONLWriter, error) {
 	return &JSONLWriter{f: f, w: bufio.NewWriter(f)}, nil
 }
 
-// Write implementa Sink: escribe el JSON crudo de la fila.
-func (j *JSONLWriter) Write(raw json.RawMessage) error {
-	if len(raw) == 0 {
-		return errors.New("sync: fila sin JSON original, no se escribe nada")
+// Write implementa Sink: escribe una linea por fila de la pagina.
+func (j *JSONLWriter) Write(rows []json.RawMessage) error {
+	for _, raw := range rows {
+		if len(raw) == 0 {
+			return errors.New("sync: fila sin JSON original, no se escribe nada")
+		}
+		if _, err := j.w.Write(raw); err != nil {
+			return err
+		}
+		if err := j.w.WriteByte('\n'); err != nil {
+			return err
+		}
 	}
-	if _, err := j.w.Write(raw); err != nil {
-		return err
-	}
-	return j.w.WriteByte('\n')
+	return nil
 }
 
 // Close vacia el buffer y cierra el archivo.

@@ -3,16 +3,24 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 )
 
-const tokenDePrueba = "TOKEN-SECRETO-DE-PRUEBA"
+const (
+	tokenDePrueba = "TOKEN-SECRETO-DE-PRUEBA"
+	tokenMylos    = "MYLOS-TOKEN-SECRETO-DE-PRUEBA"
+
+	pathClientes = "/integrations/tango/customers/batch"
+	pathVentas   = "/integrations/tango/sales/batch"
+)
 
 // pedido es un request que recibio el Tango falso.
 type pedido struct {
@@ -72,6 +80,53 @@ func nuevoTangoFalso(t *testing.T, filasPorProcess map[string][]map[string]any) 
 }
 
 // vistos devuelve los process pedidos, en orden.
+// nuevoTangoFalsoPaginado respeta pageSize/pageIndex, para poder verificar
+// que se manda un batch por pagina.
+func nuevoTangoFalsoPaginado(t *testing.T, filasPorProcess map[string][]map[string]any) *tangoFalso {
+	t.Helper()
+	f := &tangoFalso{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("ApiAuthorization") != tokenDePrueba {
+			http.Error(w, "token invalido", http.StatusUnauthorized)
+			return
+		}
+		q := r.URL.Query()
+		process := q.Get("process")
+		f.mu.Lock()
+		f.pedidos = append(f.pedidos, pedido{process: process})
+		f.mu.Unlock()
+
+		size, _ := strconv.Atoi(q.Get("pageSize"))
+		if size <= 0 {
+			size = 1
+		}
+		idx, _ := strconv.Atoi(q.Get("pageIndex"))
+
+		todas := filasPorProcess[process]
+		total := len(todas)
+		pages := (total + size - 1) / size
+		if pages == 0 {
+			pages = 1
+		}
+		desde := idx * size
+		hasta := min(desde+size, total)
+		chunk := []map[string]any{}
+		if desde < total {
+			chunk = todas[desde:hasta]
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"resultData": map[string]any{
+				"list": chunk, "pageIndex": idx, "pageSize": size,
+				"totalCount": total, "totalPages": pages,
+				"hasPreviousPage": idx > 0, "hasNextPage": idx < pages-1,
+			},
+			"message": nil, "exceptionInfo": nil, "succeeded": true,
+		})
+	}))
+	t.Cleanup(f.Server.Close)
+	return f
+}
+
 func (f *tangoFalso) vistos() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -96,13 +151,84 @@ func (f *tangoFalso) pedidoDe(t *testing.T, process string) pedido {
 	return pedido{}
 }
 
+// ingesta es un request recibido por el MYLOS falso.
+type ingesta struct {
+	path  string
+	auth  string
+	batch map[string]any
+}
+
+// mylosFalso registra cada batch recibido y puede responder lo que se le pida.
+type mylosFalso struct {
+	*httptest.Server
+	mu          sync.Mutex
+	ingestas    []ingesta
+	duplicate   bool   // responder duplicate=true / stored=false
+	fallaEn     string // path que responde con status fallaStatus
+	fallaStatus int
+}
+
+func nuevoMylosFalso(t *testing.T) *mylosFalso {
+	t.Helper()
+	m := &mylosFalso{fallaStatus: http.StatusInternalServerError}
+	m.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+
+		m.mu.Lock()
+		m.ingestas = append(m.ingestas, ingesta{path: r.URL.Path, auth: r.Header.Get("Authorization"), batch: b})
+		falla, status, dup := m.fallaEn, m.fallaStatus, m.duplicate
+		m.mu.Unlock()
+
+		if falla != "" && falla == r.URL.Path {
+			http.Error(w, "la ingesta fallo", status)
+			return
+		}
+		rows, _ := b["rows"].([]any)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"batch_id": "batch-abc-123", "received": len(rows),
+			"stored": !dup, "duplicate": dup,
+		})
+	}))
+	t.Cleanup(m.Server.Close)
+	return m
+}
+
+func (m *mylosFalso) recibidas() []ingesta {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]ingesta(nil), m.ingestas...)
+}
+
+func (m *mylosFalso) primeraA(t *testing.T, path string) ingesta {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, i := range m.ingestas {
+		if i.path == path {
+			return i
+		}
+	}
+	t.Fatalf("no hubo ningun POST a %s (hubo %d)", path, len(m.ingestas))
+	return ingesta{}
+}
+
 // entorno deja la config lista apuntando al Tango falso.
 // Devuelve el path a un --env-file inexistente, para que ningun .env del
 // disco se cuele en los tests.
-func entorno(t *testing.T, baseURL string, extra map[string]string) string {
+// Si extra no trae MYLOS_BASE_URL, se levanta un MYLOS falso que acepta todo:
+// asi los tests que no miran la ingesta no tienen que armarla.
+func entorno(t *testing.T, tangoURL string, extra map[string]string) string {
 	t.Helper()
+	mylosURL := extra["MYLOS_BASE_URL"]
+	if mylosURL == "" {
+		mylosURL = nuevoMylosFalso(t).URL
+	}
 	vars := map[string]string{
-		"TANGO_BASE_URL":                  baseURL,
+		"TANGO_BASE_URL":                  tangoURL,
+		"MYLOS_BASE_URL":                  mylosURL,
+		"MYLOS_INGEST_TOKEN":              tokenMylos,
+		"MYLOS_MAX_RETRIES":               "0",
 		"TANGO_API_TOKEN":                 tokenDePrueba,
 		"TANGO_COMPANY_ID":                "2",
 		"TANGO_SALES_PROCESS_ID":          "17839",
@@ -654,5 +780,352 @@ func TestClientes_ConservaTodasLasColumnas(t *testing.T) {
 		if _, ok := m[k]; !ok {
 			t.Errorf("falta la columna %s en el JSONL", k)
 		}
+	}
+}
+
+// --- envio a MYLOS ----------------------------------------------------------
+
+func conMylos(t *testing.T, my *mylosFalso, extra map[string]string) map[string]string {
+	t.Helper()
+	out := map[string]string{"MYLOS_BASE_URL": my.URL}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+// Cada dataset postea a su endpoint, con el Bearer correcto y la metadata
+// que espera el backend.
+func TestPOST_EndpointMetadataYAuth(t *testing.T) {
+	casos := []struct {
+		comando       string
+		path          string
+		processID     float64
+		customQueryID string
+	}{
+		{"sync-customers", pathClientes, 17851, "10"},
+		{"sync-sales", pathVentas, 17839, "9"},
+	}
+	for _, caso := range casos {
+		t.Run(caso.comando, func(t *testing.T) {
+			srv := nuevoTangoFalso(t, map[string][]map[string]any{
+				"17839": filasVentas(), "17851": filasClientes(),
+			})
+			my := nuevoMylosFalso(t)
+			envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+			out, err := capturar(t, func() error {
+				return run([]string{caso.comando, "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+			})
+			if err != nil {
+				t.Fatalf("%s: %v\n%s", caso.comando, err, out)
+			}
+
+			in := my.primeraA(t, caso.path)
+			if in.auth != "Bearer "+tokenMylos {
+				t.Errorf("Authorization = %q", in.auth)
+			}
+			if got := in.batch["company_id"]; got != float64(2) {
+				t.Errorf("company_id = %v (%T), esperaba 2", got, got)
+			}
+			if got := in.batch["process_id"]; got != caso.processID {
+				t.Errorf("process_id = %v, esperaba %v", got, caso.processID)
+			}
+			if got := in.batch["custom_query_id"]; got != caso.customQueryID {
+				t.Errorf("custom_query_id = %v, esperaba %q", got, caso.customQueryID)
+			}
+			if in.batch["from_date"] != "22/09/2026" || in.batch["to_date"] != "23/09/2026" {
+				t.Errorf("fechas = %v -> %v", in.batch["from_date"], in.batch["to_date"])
+			}
+			// Solo un POST: el otro dataset no se toca.
+			if n := len(my.recibidas()); n != 1 {
+				t.Errorf("esperaba 1 POST, hubo %d", n)
+			}
+			if !strings.Contains(out, "batch-abc-123") {
+				t.Errorf("el resumen deberia mostrar el batch_id:\n%s", out)
+			}
+		})
+	}
+}
+
+// Las filas llegan a MYLOS tal cual salieron de Tango, columnas raras incluidas.
+func TestPOST_ConservaRowsCrudas(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{
+		"17839": filasVentas(), "17851": filasClientes(),
+	})
+	my := nuevoMylosFalso(t)
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	if out, err := capturar(t, func() error {
+		return run([]string{"sync", "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+	}); err != nil {
+		t.Fatalf("sync: %v\n%s", err, out)
+	}
+
+	esperado := map[string]map[string]any{
+		pathClientes: filasClientes()[0],
+		pathVentas:   filasVentas()[0],
+	}
+	for path, fila := range esperado {
+		in := my.primeraA(t, path)
+		rows, ok := in.batch["rows"].([]any)
+		if !ok || len(rows) != 1 {
+			t.Fatalf("%s: rows = %v", path, in.batch["rows"])
+		}
+		row, ok := rows[0].(map[string]any)
+		if !ok {
+			t.Fatalf("%s: la fila no es un objeto: %v", path, rows[0])
+		}
+		if len(row) != len(fila) {
+			t.Errorf("%s: llegaron %d columnas de %d: %v", path, len(row), len(fila), row)
+		}
+		for k, v := range fila {
+			if fmt.Sprint(row[k]) != fmt.Sprint(v) {
+				t.Errorf("%s: columna %s = %v, esperaba %v", path, k, row[k], v)
+			}
+		}
+	}
+}
+
+// duplicate=true es exito: el comando termina bien y sync sigue con ventas.
+func TestPOST_DuplicateEsExitoYSyncSigue(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{
+		"17839": filasVentas(), "17851": filasClientes(),
+	})
+	my := nuevoMylosFalso(t)
+	my.duplicate = true
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync", "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+	})
+	if err != nil {
+		t.Fatalf("duplicate no deberia ser error: %v\n%s", err, out)
+	}
+
+	var paths []string
+	for _, in := range my.recibidas() {
+		paths = append(paths, in.path)
+	}
+	if len(paths) != 2 || paths[0] != pathClientes || paths[1] != pathVentas {
+		t.Errorf("con duplicate sync tiene que completar las dos etapas: %v", paths)
+	}
+	if !strings.Contains(out, "stored / duplicate: 0 / 1") {
+		t.Errorf("el resumen deberia contar el duplicado:\n%s", out)
+	}
+}
+
+// Si el POST de clientes falla, no se leen ni se envian las ventas.
+func TestPOST_SyncNoSigueSiFallaElPOSTDeClientes(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{
+		"17839": filasVentas(), "17851": filasClientes(),
+	})
+	my := nuevoMylosFalso(t)
+	my.fallaEn = pathClientes
+	my.fallaStatus = http.StatusUnprocessableEntity
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync", "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+	})
+	if err == nil {
+		t.Fatalf("esperaba error\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "fallo la etapa de clientes") {
+		t.Errorf("el error deberia identificar la etapa: %v", err)
+	}
+	for _, in := range my.recibidas() {
+		if in.path == pathVentas {
+			t.Fatal("no deberia haber posteado ventas")
+		}
+	}
+	for _, p := range srv.vistos() {
+		if p == "17839" {
+			t.Fatal("no deberia haber leido ventas de Tango")
+		}
+	}
+}
+
+// 422 no se reintenta; 500 si. Se verifica contando los POST que llegaron.
+func TestPOST_PoliticaDeReintentos(t *testing.T) {
+	casos := map[string]struct {
+		status    int
+		reintenta bool
+	}{
+		"401": {http.StatusUnauthorized, false},
+		"422": {http.StatusUnprocessableEntity, false},
+		"429": {http.StatusTooManyRequests, true},
+		"500": {http.StatusInternalServerError, true},
+	}
+	for nombre, caso := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			srv := nuevoTangoFalso(t, map[string][]map[string]any{"17851": filasClientes()})
+			my := nuevoMylosFalso(t)
+			my.fallaEn = pathClientes
+			my.fallaStatus = caso.status
+			envFile := entorno(t, srv.URL, conMylos(t, my, map[string]string{
+				"MYLOS_MAX_RETRIES":      "2",
+				"MYLOS_RETRY_BASE_DELAY": "1ms",
+			}))
+
+			if _, err := capturar(t, func() error {
+				return run([]string{"sync-customers", "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+			}); err == nil {
+				t.Fatal("esperaba error")
+			}
+
+			n := len(my.recibidas())
+			if caso.reintenta && n != 3 {
+				t.Errorf("%s deberia reintentarse (1 + 2), hubo %d POST", nombre, n)
+			}
+			if !caso.reintenta && n != 1 {
+				t.Errorf("%s no deberia reintentarse, hubo %d POST", nombre, n)
+			}
+		})
+	}
+}
+
+// El token de ingesta no aparece en la salida, ni con --log-level debug.
+func TestPOST_NingunSecretoEnLaSalida(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{
+		"17839": filasVentas(), "17851": filasClientes(),
+	})
+	my := nuevoMylosFalso(t)
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync", "--from", "22/09/2026", "--to", "23/09/2026",
+			"--env-file", envFile, "--log-level", "debug"})
+	})
+	if err != nil {
+		t.Fatalf("sync: %v\n%s", err, out)
+	}
+	for _, secreto := range []string{tokenMylos, tokenDePrueba} {
+		if strings.Contains(out, secreto) {
+			t.Fatalf("un secreto aparecio en la salida:\n%s", out)
+		}
+	}
+	// El destino si se loguea, sin credenciales.
+	if !strings.Contains(out, pathClientes) || !strings.Contains(out, pathVentas) {
+		t.Errorf("deberia loguear los endpoints destino:\n%s", out)
+	}
+}
+
+// Aunque MYLOS devuelva el token en un body de error, no llega al log.
+func TestPOST_TokenDevueltoPorElBackendSeRedacta(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{"17851": filasClientes()})
+	my := nuevoMylosFalso(t)
+	my.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "token invalido: "+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+			http.StatusUnauthorized)
+	})
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync-customers", "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+	})
+	if err == nil {
+		t.Fatal("esperaba error")
+	}
+	if strings.Contains(err.Error(), tokenMylos) || strings.Contains(out, tokenMylos) {
+		t.Fatalf("el token se filtro.\nerror: %v\nsalida: %s", err, out)
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Errorf("el body deberia venir enmascarado: %v", err)
+	}
+}
+
+// Sin config de MYLOS, los comandos fallan claro y sin leer nada de Tango.
+func TestPOST_FallaSiFaltaLaConfigDeMylos(t *testing.T) {
+	for _, falta := range []string{"MYLOS_BASE_URL", "MYLOS_INGEST_TOKEN"} {
+		for _, comando := range []string{"sync-customers", "sync-sales", "sync"} {
+			t.Run(falta+"/"+comando, func(t *testing.T) {
+				srv := nuevoTangoFalso(t, map[string][]map[string]any{
+					"17839": filasVentas(), "17851": filasClientes(),
+				})
+				my := nuevoMylosFalso(t)
+				envFile := entorno(t, srv.URL, conMylos(t, my, map[string]string{falta: ""}))
+
+				_, err := capturar(t, func() error {
+					return run([]string{comando, "--from", "22/09/2026", "--to", "23/09/2026", "--env-file", envFile})
+				})
+				if err == nil {
+					t.Fatal("esperaba error")
+				}
+				if !strings.Contains(err.Error(), falta) {
+					t.Errorf("el error deberia nombrar %s: %v", falta, err)
+				}
+				if n := len(srv.vistos()); n != 0 {
+					t.Errorf("no deberia haber consultado Tango: %d requests", n)
+				}
+			})
+		}
+	}
+}
+
+// El JSONL es ademas del POST, no en lugar del POST.
+func TestPOST_ElJSONLNoReemplazaElEnvio(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{
+		"17839": filasVentas(), "17851": filasClientes(),
+	})
+	my := nuevoMylosFalso(t)
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+	dir := t.TempDir()
+
+	if out, err := capturar(t, func() error {
+		return run([]string{"sync", "--from", "22/09/2026", "--to", "23/09/2026",
+			"--env-file", envFile, "--out-dir", dir})
+	}); err != nil {
+		t.Fatalf("sync: %v\n%s", err, out)
+	}
+
+	if n := len(my.recibidas()); n != 2 {
+		t.Errorf("con --out-dir igual tiene que postear los dos datasets, hubo %d POST", n)
+	}
+	for _, archivo := range []string{"clientes.jsonl", "ventas.jsonl"} {
+		b, err := os.ReadFile(filepath.Join(dir, archivo))
+		if err != nil || len(b) == 0 {
+			t.Errorf("%s: %v (len %d)", archivo, err, len(b))
+		}
+	}
+}
+
+// Un batch por pagina de Tango: el agente nunca junta el dataset entero.
+func TestPOST_UnBatchPorPagina(t *testing.T) {
+	var filas []map[string]any
+	for i := 0; i < 5; i++ {
+		f := filasClientes()[0]
+		f["COD_CLIENTE"] = fmt.Sprintf("C%04d", i)
+		filas = append(filas, f)
+	}
+	srv := nuevoTangoFalsoPaginado(t, map[string][]map[string]any{"17851": filas})
+	my := nuevoMylosFalso(t)
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync-customers", "--from", "22/09/2026", "--to", "23/09/2026",
+			"--env-file", envFile, "--page-size", "2"})
+	})
+	if err != nil {
+		t.Fatalf("sync-customers: %v\n%s", err, out)
+	}
+
+	recibidas := my.recibidas()
+	if len(recibidas) != 3 {
+		t.Fatalf("5 filas con page-size 2 son 3 batches, hubo %d", len(recibidas))
+	}
+	var total int
+	for i, in := range recibidas {
+		rows, _ := in.batch["rows"].([]any)
+		total += len(rows)
+		if i < 2 && len(rows) != 2 {
+			t.Errorf("batch %d: %d filas, esperaba 2", i, len(rows))
+		}
+	}
+	if total != 5 {
+		t.Errorf("llegaron %d filas en total, esperaba 5", total)
+	}
+	if !strings.Contains(out, "MYLOS batches   : 3 (5 filas)") {
+		t.Errorf("el resumen deberia reportar 3 batches / 5 filas:\n%s", out)
 	}
 }

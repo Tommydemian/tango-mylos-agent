@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"github.com/mylos/mylos-tango-agent/internal/model"
@@ -17,10 +18,14 @@ import (
 // tanto, cuenta paginas y filas y nada mas: cualquier agregado seria una
 // suposicion sobre columnas que todavia no vimos.
 func FetchCustomers(ctx context.Context, c *tango.Client, opts Options, log *slog.Logger, sink Sink) (Summary, error) {
-	return paginate(ctx, c, opts, log, func(row model.RawRow) error {
-		if sink != nil {
-			return sink(row.Raw)
+	return paginate(ctx, c, opts, log, func(rows []model.RawRow) error {
+		if sink == nil {
+			return nil
 		}
-		return nil
+		raws := make([]json.RawMessage, 0, len(rows))
+		for _, row := range rows {
+			raws = append(raws, row.Raw)
+		}
+		return sink(raws)
 	})
 }

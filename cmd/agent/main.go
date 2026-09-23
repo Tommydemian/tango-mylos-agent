@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,11 +13,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/mylos/mylos-tango-agent/internal/config"
+	"github.com/mylos/mylos-tango-agent/internal/mylos"
 	"github.com/mylos/mylos-tango-agent/internal/sync"
 	"github.com/mylos/mylos-tango-agent/internal/tango"
 )
@@ -110,6 +113,7 @@ type session struct {
 	cfg      config.Config
 	log      *slog.Logger
 	client   *tango.Client
+	mylos    *mylos.Client
 	ctx      context.Context
 	stop     func()
 	from, to time.Time
@@ -146,6 +150,12 @@ func newSession(cf *commonFlags) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Todos los comandos POSTean: si falta la config de MYLOS, se corta aca,
+	// antes de leer nada de Tango.
+	mylosClient, err := mylos.New(cfg, log)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	if cf.timeout > 0 {
@@ -154,7 +164,10 @@ func newSession(cf *commonFlags) (*session, error) {
 		prev := stop
 		stop = func() { cancel(); prev() }
 	}
-	return &session{cfg: cfg, log: log, client: client, ctx: ctx, stop: stop, from: from, to: to}, nil
+	return &session{
+		cfg: cfg, log: log, client: client, mylos: mylosClient,
+		ctx: ctx, stop: stop, from: from, to: to,
+	}, nil
 }
 
 // consulta identifica una lectura concreta: que process y con que schema.
@@ -199,6 +212,34 @@ func flagExplicito(fs *flag.FlagSet, nombre string) bool {
 		}
 	})
 	return visto
+}
+
+// uploader arma el enviador a MYLOS para un dataset.
+// company_id y process_id viajan como numeros: MYLOS los espera asi.
+func (s *session) uploader(d mylos.Dataset, q consulta) (*mylos.Uploader, error) {
+	companyID, err := numerico(s.cfg.TangoCompanyID, "TANGO_COMPANY_ID")
+	if err != nil {
+		return nil, err
+	}
+	processID, err := numerico(q.processID, "el process id de "+string(d))
+	if err != nil {
+		return nil, err
+	}
+	return mylos.NewUploader(s.mylos, d, mylos.Meta{
+		CompanyID:     companyID,
+		ProcessID:     processID,
+		CustomQueryID: q.customQuery,
+		FromDate:      s.from.Format(s.cfg.DateFormat),
+		ToDate:        s.to.Format(s.cfg.DateFormat),
+	}, s.log), nil
+}
+
+func numerico(v, que string) (int, error) {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("MYLOS espera un valor numerico para %s, y vale %q", que, v)
+	}
+	return n, nil
 }
 
 // openSink abre el JSONL de salida si se pidio. Devuelve siempre un close().
@@ -357,40 +398,56 @@ func (s *session) etapaVentas(q consulta, cf *commonFlags, out string) error {
 	return s.ventas(q, cf, sink, out)
 }
 
-func (s *session) clientes(q consulta, cf *commonFlags, sink sync.Sink, out string) error {
+func (s *session) clientes(q consulta, cf *commonFlags, jsonl sync.Sink, out string) error {
 	opts := s.options(q, cf)
+	up, err := s.uploader(mylos.DatasetCustomers, q)
+	if err != nil {
+		return err
+	}
 	s.log.Info("leyendo clientes",
 		slog.String("process", opts.ProcessID),
 		slog.String("custom_query", opts.CustomQuery),
 		slog.String("from_date", opts.FromDate),
 		slog.String("to_date", opts.ToDate),
 		slog.Int("page_size", opts.PageSize),
+		slog.String("destino", s.mylos.Target(mylos.DatasetCustomers)),
 	)
 
+	// El JSONL, si se pidio, es ademas del POST: nunca lo reemplaza.
+	sink := sync.Sinks(jsonl, func(rows []json.RawMessage) error {
+		return up.SendPage(s.ctx, rows)
+	})
+
 	summary, err := sync.FetchCustomers(s.ctx, s.client, opts, s.log, sink)
-	if err != nil {
-		if summary.Pages > 0 {
-			printCustomersSummary(summary, opts, out)
-		}
-		return err
+	if summary.Pages > 0 || err == nil {
+		printCustomersSummary(summary, up.Stats(), opts, out)
 	}
-	printCustomersSummary(summary, opts, out)
-	return nil
+	return err
 }
 
-func (s *session) ventas(q consulta, cf *commonFlags, sink sync.Sink, out string) error {
+func (s *session) ventas(q consulta, cf *commonFlags, jsonl sync.Sink, out string) error {
 	opts := s.options(q, cf)
+	up, err := s.uploader(mylos.DatasetSales, q)
+	if err != nil {
+		return err
+	}
 	s.log.Info("leyendo ventas",
 		slog.String("process", opts.ProcessID),
 		slog.String("custom_query", opts.CustomQuery),
 		slog.String("from_date", opts.FromDate),
 		slog.String("to_date", opts.ToDate),
 		slog.Int("page_size", opts.PageSize),
+		slog.String("destino", s.mylos.Target(mylos.DatasetSales)),
 	)
+
+	// El JSONL, si se pidio, es ademas del POST: nunca lo reemplaza.
+	sink := sync.Sinks(jsonl, func(rows []json.RawMessage) error {
+		return up.SendPage(s.ctx, rows)
+	})
 
 	summary, err := sync.FetchSales(s.ctx, s.client, opts, s.log, sink)
 	if summary.Pages > 0 || err == nil {
-		printSalesSummary(summary, opts, out)
+		printSalesSummary(summary, up.Stats(), opts, out)
 	}
 	// Diagnostico del unknown abierto: si las fechas que devolvio Tango caen
 	// fuera del rango pedido, el filtro no hace lo que asumimos.
@@ -400,7 +457,7 @@ func (s *session) ventas(q consulta, cf *commonFlags, sink sync.Sink, out string
 	return err
 }
 
-func printSalesSummary(s sync.SalesSummary, opts sync.Options, out string) {
+func printSalesSummary(s sync.SalesSummary, env mylos.Stats, opts sync.Options, out string) {
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "== Resumen ventas ==")
 	fmt.Fprintf(stdout, "  process            : %s\n", opts.ProcessID)
@@ -427,10 +484,11 @@ func printSalesSummary(s sync.SalesSummary, opts sync.Options, out string) {
 		fmt.Fprintf(stdout, "  suma CANTIDAD      : %.2f\n", s.SumCantidad)
 		fmt.Fprintf(stdout, "  suma TOTAL         : %.2f (orientativo: falta confirmar impuestos y signo de NC)\n", s.SumTotal)
 	}
+	printEnvio(env)
 	printCola(s.Summary, out)
 }
 
-func printCustomersSummary(s sync.Summary, opts sync.Options, out string) {
+func printCustomersSummary(s sync.Summary, env mylos.Stats, opts sync.Options, out string) {
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "== Resumen clientes ==")
 	fmt.Fprintf(stdout, "  process            : %s\n", opts.ProcessID)
@@ -439,7 +497,18 @@ func printCustomersSummary(s sync.Summary, opts sync.Options, out string) {
 	fmt.Fprintf(stdout, "  paginas leidas     : %d\n", s.Pages)
 	fmt.Fprintf(stdout, "  filas              : %d\n", s.Rows)
 	fmt.Fprintf(stdout, "  totalCount Tango   : %d (totalPages %d)\n", s.TotalCountReported, s.TotalPagesReported)
+	printEnvio(env)
 	printCola(s, out)
+}
+
+// printEnvio imprime que paso con el envio a MYLOS.
+func printEnvio(env mylos.Stats) {
+	fmt.Fprintf(stdout, "  -> MYLOS batches   : %d (%d filas)\n", env.Batches, env.Rows)
+	if env.Batches > 0 {
+		fmt.Fprintf(stdout, "     stored / duplicate: %d / %d\n", env.Stored, env.Duplicates)
+		fmt.Fprintf(stdout, "     ultimo batch_id   : %s\n", orGuion(env.LastBatchID))
+		fmt.Fprintf(stdout, "     tiempo de envio   : %s\n", env.Elapsed.Round(time.Millisecond))
+	}
 }
 
 // printCola imprime lo comun al final de cualquier resumen.

@@ -29,10 +29,40 @@ type Options struct {
 	SumAmounts bool
 }
 
-// Sink recibe el JSON original de cada fila. Puede ser nil.
-// Es raw a proposito: lo que se vuelca a disco tiene que ser exactamente lo
-// que mando Tango, sin pasar por ningun struct que pueda descartar campos.
-type Sink func(raw json.RawMessage) error
+// Sink recibe las filas de UNA pagina de Tango, con su JSON original.
+//
+// Es raw a proposito: lo que se vuelca a disco o se manda a MYLOS tiene que
+// ser exactamente lo que mando Tango, sin pasar por ningun struct que pueda
+// descartar campos.
+//
+// Trabaja de a paginas, no de a filas, para que el agente nunca junte el
+// dataset entero en memoria: cada pagina se procesa y se descarta.
+type Sink func(rows []json.RawMessage) error
+
+// Sinks encadena varios sinks sobre la misma pagina, en orden.
+// Si uno falla, los siguientes no corren y el error sube.
+func Sinks(ss ...Sink) Sink {
+	activos := make([]Sink, 0, len(ss))
+	for _, s := range ss {
+		if s != nil {
+			activos = append(activos, s)
+		}
+	}
+	if len(activos) == 0 {
+		return nil
+	}
+	if len(activos) == 1 {
+		return activos[0]
+	}
+	return func(rows []json.RawMessage) error {
+		for _, s := range activos {
+			if err := s(rows); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
 
 // Summary es lo que toda corrida sabe informar, sea de la consulta que sea.
 type Summary struct {
@@ -54,7 +84,7 @@ type Summary struct {
 // (Rows != TotalCountReported) y lo reportamos. La solucion va a ser
 // idempotencia del lado de MYLOS mas ventanas de tiempo solapadas; se disenia
 // cuando exista el contrato, no antes.
-func paginate[T any](ctx context.Context, c *tango.Client, opts Options, log *slog.Logger, onRow func(T) error) (Summary, error) {
+func paginate[T any](ctx context.Context, c *tango.Client, opts Options, log *slog.Logger, onPage func(rows []T) error) (Summary, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -98,12 +128,10 @@ func paginate[T any](ctx context.Context, c *tango.Client, opts Options, log *sl
 		}
 
 		sum.Pages++
-		for _, row := range page.List {
-			sum.Rows++
-			if err := onRow(row); err != nil {
-				sum.Elapsed = time.Since(start)
-				return sum, err
-			}
+		sum.Rows += len(page.List)
+		if err := onPage(page.List); err != nil {
+			sum.Elapsed = time.Since(start)
+			return sum, err
 		}
 
 		log.Info("sync: pagina leida",

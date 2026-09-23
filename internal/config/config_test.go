@@ -14,6 +14,8 @@ func setEnv(t *testing.T, kv map[string]string) {
 		"TANGO_BASE_URL", "TANGO_API_TOKEN", "TANGO_COMPANY_ID",
 		"TANGO_SALES_PROCESS_ID", "TANGO_CUSTOMERS_PROCESS_ID",
 		"TANGO_SALES_CUSTOM_QUERY_ID", "TANGO_CUSTOMERS_CUSTOM_QUERY_ID",
+		"MYLOS_BASE_URL", "MYLOS_INGEST_TOKEN",
+		"MYLOS_HTTP_TIMEOUT", "MYLOS_MAX_RETRIES", "MYLOS_RETRY_BASE_DELAY",
 		"TANGO_HTTP_TIMEOUT", "TANGO_MAX_RETRIES", "TANGO_RETRY_BASE_DELAY", "TANGO_DATE_FORMAT",
 	} {
 		os.Unsetenv(k)
@@ -253,5 +255,39 @@ func TestCustomQueryIDs_SonOpcionales(t *testing.T) {
 	// Y los process ids siguen resolviendose normalmente.
 	if _, err := c.SalesProcessID(); err != nil {
 		t.Errorf("SalesProcessID: %v", err)
+	}
+}
+
+// Load tiene que leer del entorno TODO lo que declara Config: un campo que se
+// agrega al struct pero se olvida en Load queda silenciosamente vacio.
+func TestLoad_LeeLaConfigDeMylos(t *testing.T) {
+	env := validEnv()
+	env["MYLOS_BASE_URL"] = "https://api.mylos.app"
+	env["MYLOS_INGEST_TOKEN"] = "token-de-ingesta"
+	setEnv(t, env)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MylosBaseURL != "https://api.mylos.app" {
+		t.Errorf("MylosBaseURL = %q", c.MylosBaseURL)
+	}
+	if c.MylosIngestToken != "token-de-ingesta" {
+		t.Errorf("MylosIngestToken = %q", c.MylosIngestToken)
+	}
+	if c.MylosHTTPTimeout != 60*time.Second || c.MylosMaxRetries != 3 {
+		t.Errorf("defaults de mylos = %v / %d", c.MylosHTTPTimeout, c.MylosMaxRetries)
+	}
+}
+
+func TestLogValue_NoExponeElTokenDeMylos(t *testing.T) {
+	c := Config{MylosBaseURL: "https://api.mylos.app", MylosIngestToken: "MYLOS-SECRETO"}
+	s := c.LogValue().String()
+	if strings.Contains(s, "MYLOS-SECRETO") {
+		t.Fatalf("LogValue filtro el token de ingesta: %s", s)
+	}
+	if !strings.Contains(s, "api.mylos.app") {
+		t.Errorf("la base url si deberia loguearse: %s", s)
 	}
 }

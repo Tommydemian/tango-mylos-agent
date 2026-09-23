@@ -36,6 +36,14 @@ type Config struct {
 	MaxRetries     int
 	RetryBaseDelay time.Duration
 
+	// MYLOS: destino de la ingesta.
+	MylosBaseURL     string // ej: https://api.mylos.app
+	MylosIngestToken string // SECRETO: nunca loguear ni incluir en errores
+
+	MylosHTTPTimeout    time.Duration
+	MylosMaxRetries     int
+	MylosRetryBaseDelay time.Duration
+
 	// DateFormat es el layout Go con el que se serializan fromDate/toDate.
 	// Default 02/01/2006 (dd/MM/yyyy): hipotesis, no hecho confirmado.
 	// Configurable justamente porque todavia hay que demostrarlo.
@@ -62,10 +70,14 @@ func Load() (Config, error) {
 
 		TangoSalesCustomQueryID:     strings.TrimSpace(os.Getenv("TANGO_SALES_CUSTOM_QUERY_ID")),
 		TangoCustomersCustomQueryID: strings.TrimSpace(os.Getenv("TANGO_CUSTOMERS_CUSTOM_QUERY_ID")),
-		HTTPTimeout:                 defaultHTTPTimeout,
-		MaxRetries:                  defaultMaxRetries,
-		RetryBaseDelay:              defaultRetryBaseDelay,
-		DateFormat:                  defaultDateFormat,
+
+		MylosBaseURL:     strings.TrimSpace(os.Getenv("MYLOS_BASE_URL")),
+		MylosIngestToken: strings.TrimSpace(os.Getenv("MYLOS_INGEST_TOKEN")),
+
+		HTTPTimeout:    defaultHTTPTimeout,
+		MaxRetries:     defaultMaxRetries,
+		RetryBaseDelay: defaultRetryBaseDelay,
+		DateFormat:     defaultDateFormat,
 	}
 
 	var err error
@@ -76,6 +88,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if c.RetryBaseDelay, err = durationEnv("TANGO_RETRY_BASE_DELAY", defaultRetryBaseDelay); err != nil {
+		return Config{}, err
+	}
+	if c.MylosHTTPTimeout, err = durationEnv("MYLOS_HTTP_TIMEOUT", defaultHTTPTimeout); err != nil {
+		return Config{}, err
+	}
+	if c.MylosMaxRetries, err = intEnv("MYLOS_MAX_RETRIES", defaultMaxRetries); err != nil {
+		return Config{}, err
+	}
+	if c.MylosRetryBaseDelay, err = durationEnv("MYLOS_RETRY_BASE_DELAY", defaultRetryBaseDelay); err != nil {
 		return Config{}, err
 	}
 	if v := strings.TrimSpace(os.Getenv("TANGO_DATE_FORMAT")); v != "" {
@@ -162,6 +183,10 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("http_timeout", c.HTTPTimeout),
 		slog.Int("max_retries", c.MaxRetries),
 		slog.Duration("retry_base_delay", c.RetryBaseDelay),
+		slog.String("mylos_base_url", c.MylosBaseURL),
+		slog.String("mylos_ingest_token", "[redacted]"),
+		slog.Duration("mylos_http_timeout", c.MylosHTTPTimeout),
+		slog.Int("mylos_max_retries", c.MylosMaxRetries),
 		slog.String("date_format", c.DateFormat),
 	)
 }

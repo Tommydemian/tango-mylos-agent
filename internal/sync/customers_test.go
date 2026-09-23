@@ -43,8 +43,8 @@ func TestFetchCustomers_ConservaElJSONCompleto(t *testing.T) {
 	o.ProcessID = "17851"
 
 	var got []json.RawMessage
-	sum, err := FetchCustomers(context.Background(), clientFor(t, srv.URL), o, nil, func(raw json.RawMessage) error {
-		got = append(got, raw)
+	sum, err := FetchCustomers(context.Background(), clientFor(t, srv.URL), o, nil, func(rows []json.RawMessage) error {
+		got = append(got, rows...)
 		return nil
 	})
 	if err != nil {
