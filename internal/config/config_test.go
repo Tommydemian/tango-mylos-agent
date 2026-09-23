@@ -11,7 +11,8 @@ import (
 func setEnv(t *testing.T, kv map[string]string) {
 	t.Helper()
 	for _, k := range []string{
-		"TANGO_BASE_URL", "TANGO_API_TOKEN", "TANGO_COMPANY_ID", "TANGO_SALES_PROCESS_ID",
+		"TANGO_BASE_URL", "TANGO_API_TOKEN", "TANGO_COMPANY_ID",
+		"TANGO_SALES_PROCESS_ID", "TANGO_CUSTOMERS_PROCESS_ID",
 		"TANGO_HTTP_TIMEOUT", "TANGO_MAX_RETRIES", "TANGO_RETRY_BASE_DELAY", "TANGO_DATE_FORMAT",
 	} {
 		os.Unsetenv(k)
@@ -23,10 +24,11 @@ func setEnv(t *testing.T, kv map[string]string) {
 
 func validEnv() map[string]string {
 	return map[string]string{
-		"TANGO_BASE_URL":         "http://arenales_tango:17000",
-		"TANGO_API_TOKEN":        "secreto",
-		"TANGO_COMPANY_ID":       "2",
-		"TANGO_SALES_PROCESS_ID": "17839",
+		"TANGO_BASE_URL":             "http://arenales_tango:17000",
+		"TANGO_API_TOKEN":            "secreto",
+		"TANGO_COMPANY_ID":           "2",
+		"TANGO_SALES_PROCESS_ID":     "17839",
+		"TANGO_CUSTOMERS_PROCESS_ID": "17851",
 	}
 }
 
@@ -36,8 +38,11 @@ func TestLoad_ConDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.TangoBaseURL != "http://arenales_tango:17000" || c.TangoCompanyID != "2" || c.TangoSalesProcessID != "17839" {
+	if c.TangoBaseURL != "http://arenales_tango:17000" || c.TangoCompanyID != "2" {
 		t.Errorf("config = %+v", c)
+	}
+	if c.TangoSalesProcessID != "17839" || c.TangoCustomersProcessID != "17851" {
+		t.Errorf("process ids = %q / %q", c.TangoSalesProcessID, c.TangoCustomersProcessID)
 	}
 	if c.HTTPTimeout != 60*time.Second || c.MaxRetries != 3 || c.RetryBaseDelay != 500*time.Millisecond {
 		t.Errorf("defaults = %v %v %v", c.HTTPTimeout, c.MaxRetries, c.RetryBaseDelay)
@@ -53,10 +58,66 @@ func TestLoad_FaltanObligatorias(t *testing.T) {
 	if err == nil {
 		t.Fatal("esperaba error")
 	}
-	for _, want := range []string{"TANGO_API_TOKEN", "TANGO_COMPANY_ID", "TANGO_SALES_PROCESS_ID"} {
+	for _, want := range []string{"TANGO_API_TOKEN", "TANGO_COMPANY_ID"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("el error deberia nombrar %s: %v", want, err)
 		}
+	}
+	// Los process ids NO son obligatorios para cargar la config: los pide cada
+	// comando segun lo que use, asi que sync-sales no exige el de clientes.
+	if strings.Contains(err.Error(), "PROCESS_ID") {
+		t.Errorf("Load no deberia exigir process ids: %v", err)
+	}
+}
+
+func TestProcessIDs(t *testing.T) {
+	setEnv(t, validEnv())
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if id, err := c.SalesProcessID(); err != nil || id != "17839" {
+		t.Errorf("SalesProcessID() = %q, %v", id, err)
+	}
+	if id, err := c.CustomersProcessID(); err != nil || id != "17851" {
+		t.Errorf("CustomersProcessID() = %q, %v", id, err)
+	}
+}
+
+// Cada comando pide solo el process que necesita, y el error dice cual falta
+// y para que servia.
+func TestProcessIDs_ErrorClaroSiFalta(t *testing.T) {
+	env := validEnv()
+	delete(env, "TANGO_CUSTOMERS_PROCESS_ID")
+	setEnv(t, env)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if _, err := c.SalesProcessID(); err != nil {
+		t.Errorf("ventas deberia seguir funcionando sin el process de clientes: %v", err)
+	}
+	_, err = c.CustomersProcessID()
+	if err == nil {
+		t.Fatal("esperaba error por el process de clientes faltante")
+	}
+	for _, want := range []string{"TANGO_CUSTOMERS_PROCESS_ID", "clientes"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("el error deberia mencionar %q: %v", want, err)
+		}
+	}
+
+	env = validEnv()
+	delete(env, "TANGO_SALES_PROCESS_ID")
+	setEnv(t, env)
+	c, _ = Load()
+	_, err = c.SalesProcessID()
+	if err == nil {
+		t.Fatal("esperaba error por el process de ventas faltante")
+	}
+	if !strings.Contains(err.Error(), "TANGO_SALES_PROCESS_ID") {
+		t.Errorf("el error deberia mencionar la variable: %v", err)
 	}
 }
 
@@ -99,10 +160,11 @@ func TestLoad_OpcionalesInvalidas(t *testing.T) {
 
 func TestLogValue_NoExponeElToken(t *testing.T) {
 	c := Config{
-		TangoBaseURL:        "http://x:17000",
-		TangoAPIToken:       "TOKEN-SECRETO",
-		TangoCompanyID:      "2",
-		TangoSalesProcessID: "17839",
+		TangoBaseURL:            "http://x:17000",
+		TangoAPIToken:           "TOKEN-SECRETO",
+		TangoCompanyID:          "2",
+		TangoSalesProcessID:     "17839",
+		TangoCustomersProcessID: "17851",
 	}
 	if s := c.LogValue().String(); strings.Contains(s, "TOKEN-SECRETO") {
 		t.Fatalf("LogValue filtro el token: %s", s)
@@ -114,7 +176,8 @@ func TestLoadEnvFile(t *testing.T) {
 	path := filepath.Join(dir, ".env")
 	body := "# comentario\n\nTANGO_BASE_URL=http://arenales_tango:17000\n" +
 		"export TANGO_API_TOKEN=\"desde-archivo\"\n" +
-		"TANGO_COMPANY_ID='2'\nTANGO_SALES_PROCESS_ID=17839\n"
+		"TANGO_COMPANY_ID='2'\nTANGO_SALES_PROCESS_ID=17839\n" +
+		"TANGO_CUSTOMERS_PROCESS_ID=17851\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

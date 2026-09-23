@@ -17,10 +17,14 @@ import (
 
 // Config es la configuracion efectiva del agente.
 type Config struct {
-	TangoBaseURL        string // ej: http://arenales_tango:17000
-	TangoAPIToken       string // SECRETO: nunca loguear ni incluir en errores
-	TangoCompanyID      string
-	TangoSalesProcessID string
+	TangoBaseURL   string // ej: http://arenales_tango:17000
+	TangoAPIToken  string // SECRETO: nunca loguear ni incluir en errores
+	TangoCompanyID string
+
+	// Process ids de las consultas Live. Cada comando pide el que necesita
+	// (ver SalesProcessID / CustomersProcessID): no todos hacen falta siempre.
+	TangoSalesProcessID     string
+	TangoCustomersProcessID string
 
 	HTTPTimeout    time.Duration
 	MaxRetries     int
@@ -44,14 +48,15 @@ const (
 // Load arma la Config desde el entorno del proceso y la valida.
 func Load() (Config, error) {
 	c := Config{
-		TangoBaseURL:        strings.TrimSpace(os.Getenv("TANGO_BASE_URL")),
-		TangoAPIToken:       strings.TrimSpace(os.Getenv("TANGO_API_TOKEN")),
-		TangoCompanyID:      strings.TrimSpace(os.Getenv("TANGO_COMPANY_ID")),
-		TangoSalesProcessID: strings.TrimSpace(os.Getenv("TANGO_SALES_PROCESS_ID")),
-		HTTPTimeout:         defaultHTTPTimeout,
-		MaxRetries:          defaultMaxRetries,
-		RetryBaseDelay:      defaultRetryBaseDelay,
-		DateFormat:          defaultDateFormat,
+		TangoBaseURL:            strings.TrimSpace(os.Getenv("TANGO_BASE_URL")),
+		TangoAPIToken:           strings.TrimSpace(os.Getenv("TANGO_API_TOKEN")),
+		TangoCompanyID:          strings.TrimSpace(os.Getenv("TANGO_COMPANY_ID")),
+		TangoSalesProcessID:     strings.TrimSpace(os.Getenv("TANGO_SALES_PROCESS_ID")),
+		TangoCustomersProcessID: strings.TrimSpace(os.Getenv("TANGO_CUSTOMERS_PROCESS_ID")),
+		HTTPTimeout:             defaultHTTPTimeout,
+		MaxRetries:              defaultMaxRetries,
+		RetryBaseDelay:          defaultRetryBaseDelay,
+		DateFormat:              defaultDateFormat,
 	}
 
 	var err error
@@ -74,7 +79,27 @@ func Load() (Config, error) {
 	return c, nil
 }
 
+// SalesProcessID devuelve el process de la consulta de ventas, o un error
+// claro si no esta configurado.
+func (c Config) SalesProcessID() (string, error) {
+	return c.processID(c.TangoSalesProcessID, "TANGO_SALES_PROCESS_ID", "ventas")
+}
+
+// CustomersProcessID devuelve el process de la consulta de clientes, o un
+// error claro si no esta configurado.
+func (c Config) CustomersProcessID() (string, error) {
+	return c.processID(c.TangoCustomersProcessID, "TANGO_CUSTOMERS_PROCESS_ID", "clientes")
+}
+
+func (c Config) processID(v, envVar, que string) (string, error) {
+	if v == "" {
+		return "", fmt.Errorf("config: falta %s (necesaria para leer %s de Tango)", envVar, que)
+	}
+	return v, nil
+}
+
 // Validate chequea lo minimo indispensable para poder hablar con Tango.
+// Los process ids NO se validan aca: los pide cada comando segun lo que use.
 func (c Config) Validate() error {
 	var missing []string
 	if c.TangoBaseURL == "" {
@@ -85,9 +110,6 @@ func (c Config) Validate() error {
 	}
 	if c.TangoCompanyID == "" {
 		missing = append(missing, "TANGO_COMPANY_ID")
-	}
-	if c.TangoSalesProcessID == "" {
-		missing = append(missing, "TANGO_SALES_PROCESS_ID")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: faltan variables obligatorias: %s", strings.Join(missing, ", "))
@@ -124,6 +146,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("tango_base_url", c.TangoBaseURL),
 		slog.String("tango_company_id", c.TangoCompanyID),
 		slog.String("tango_sales_process_id", c.TangoSalesProcessID),
+		slog.String("tango_customers_process_id", c.TangoCustomersProcessID),
 		slog.String("tango_api_token", "[redacted]"),
 		slog.Duration("http_timeout", c.HTTPTimeout),
 		slog.Int("max_retries", c.MaxRetries),

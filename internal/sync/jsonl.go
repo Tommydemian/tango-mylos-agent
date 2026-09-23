@@ -3,14 +3,16 @@ package sync
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-
-	"github.com/mylos/mylos-tango-agent/internal/model"
 )
 
 // JSONLWriter vuelca una fila por linea, tal cual la mando Tango.
 // Es solo para inspeccion manual: no es un formato de intercambio.
+//
+// CONTIENE DATOS REALES DE NEGOCIO (razon social, vendedor, articulos,
+// importes). Tratar el archivo como dato sensible.
 type JSONLWriter struct {
 	f *os.File
 	w *bufio.Writer
@@ -25,17 +27,12 @@ func NewJSONLWriter(path string) (*JSONLWriter, error) {
 	return &JSONLWriter{f: f, w: bufio.NewWriter(f)}, nil
 }
 
-// Write implementa Sink.
-func (j *JSONLWriter) Write(row model.SalesLine) error {
-	line := row.Raw
-	if len(line) == 0 {
-		b, err := json.Marshal(row)
-		if err != nil {
-			return err
-		}
-		line = b
+// Write implementa Sink: escribe el JSON crudo de la fila.
+func (j *JSONLWriter) Write(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return errors.New("sync: fila sin JSON original, no se escribe nada")
 	}
-	if _, err := j.w.Write(line); err != nil {
+	if _, err := j.w.Write(raw); err != nil {
 		return err
 	}
 	return j.w.WriteByte('\n')
@@ -49,3 +46,6 @@ func (j *JSONLWriter) Close() error {
 	}
 	return j.f.Close()
 }
+
+// JSONLWriter.Write tiene que seguir sirviendo como Sink.
+var _ Sink = (*JSONLWriter)(nil).Write

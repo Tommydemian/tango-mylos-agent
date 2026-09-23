@@ -15,13 +15,17 @@ import (
 	"time"
 
 	"github.com/mylos/mylos-tango-agent/internal/config"
-	"github.com/mylos/mylos-tango-agent/internal/model"
 	"github.com/mylos/mylos-tango-agent/internal/tango"
 )
 
 // fakeTango sirve paginas fabricadas: pages[i] es la lista de la pagina i.
 // hasNextPage se calcula igual que lo hace Tango.
 func fakeTango(t *testing.T, pages [][]map[string]any, seen *atomic.Int32, indexes *[]string) *httptest.Server {
+	return fakeTangoProcess(t, pages, seen, indexes, nil)
+}
+
+// fakeTangoProcess ademas registra el parametro process de cada request.
+func fakeTangoProcess(t *testing.T, pages [][]map[string]any, seen *atomic.Int32, indexes *[]string, processes *[]string) *httptest.Server {
 	t.Helper()
 	total := 0
 	for _, p := range pages {
@@ -33,6 +37,9 @@ func fakeTango(t *testing.T, pages [][]map[string]any, seen *atomic.Int32, index
 		}
 		if indexes != nil {
 			*indexes = append(*indexes, r.URL.Query().Get("pageIndex"))
+		}
+		if processes != nil {
+			*processes = append(*processes, r.URL.Query().Get("process"))
 		}
 		idx := 0
 		fmt.Sscanf(r.URL.Query().Get("pageIndex"), "%d", &idx)
@@ -91,7 +98,25 @@ func clientFor(t *testing.T, baseURL string) *tango.Client {
 }
 
 func opts() Options {
-	return Options{ProcessID: "17839", FromDate: "2026-09-01", ToDate: "2026-09-09", PageSize: 2}
+	return Options{ProcessID: "17839", FromDate: "01/09/2026", ToDate: "09/09/2026", PageSize: 2}
+}
+
+// El process que se manda sale siempre de Options, nunca esta hardcodeado.
+func TestFetchSales_UsaElProcessDeOptions(t *testing.T) {
+	var processes []string
+	srv := fakeTangoProcess(t, [][]map[string]any{
+		{row("A1", "FAC", "ART1", 1, 10, "2026-09-02T00:00:00")},
+	}, nil, nil, &processes)
+	defer srv.Close()
+
+	o := opts()
+	o.ProcessID = "17839"
+	if _, err := FetchSales(context.Background(), clientFor(t, srv.URL), o, nil, nil); err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if len(processes) != 1 || processes[0] != "17839" {
+		t.Errorf("process enviado = %v, esperaba [17839]", processes)
+	}
 }
 
 func TestFetchSales_RecorreTodasLasPaginas(t *testing.T) {
@@ -107,9 +132,9 @@ func TestFetchSales_RecorreTodasLasPaginas(t *testing.T) {
 	o := opts()
 	o.SumAmounts = true
 
-	var got []model.SalesLine
-	sum, err := FetchSales(context.Background(), clientFor(t, srv.URL), o, nil, func(l model.SalesLine) error {
-		got = append(got, l)
+	var got []json.RawMessage
+	sum, err := FetchSales(context.Background(), clientFor(t, srv.URL), o, nil, func(raw json.RawMessage) error {
+		got = append(got, raw)
 		return nil
 	})
 	if err != nil {
@@ -282,7 +307,7 @@ func TestFetchSales_ErrorDelSinkCortaLaCorrida(t *testing.T) {
 	srv := fakeTango(t, pages, nil, nil)
 	defer srv.Close()
 
-	_, err := FetchSales(context.Background(), clientFor(t, srv.URL), opts(), nil, func(model.SalesLine) error {
+	_, err := FetchSales(context.Background(), clientFor(t, srv.URL), opts(), nil, func(json.RawMessage) error {
 		return fmt.Errorf("disco lleno")
 	})
 	if err == nil || !strings.Contains(err.Error(), "disco lleno") {

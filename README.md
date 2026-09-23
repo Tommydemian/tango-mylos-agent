@@ -16,10 +16,20 @@ siempre sale hacia afuera.
 
 ## Estado: FASE 1 - solo lectura de Tango
 
-Hoy el agente sabe hacer una sola cosa: leer la consulta Tango Live
-"Detalle de comprobantes" (process 17839) por rango de fechas, recorrer todas las
-paginas, validar la respuesta e imprimir un resumen. Opcionalmente vuelca las
-filas a un JSONL para inspeccion manual.
+Hoy el agente solo lee Tango. Recorre una consulta Tango Live por rango de
+fechas, pagina hasta el final, valida la respuesta e imprime un resumen.
+Opcionalmente vuelca las filas a un JSONL para inspeccion manual.
+
+Hay dos consultas Live configuradas, ambas contra el **mismo endpoint**: lo
+unico que cambia es el `process`.
+
+| Comando | Consulta | Process (Perfumum) |
+|---|---|---|
+| `sync-sales` | ventas, una fila por renglon de comprobante | `17839` |
+| `sync-customers` | clientes | `17851` |
+| `sync` | las dos, en secuencia: **clientes y despues ventas** | ambos |
+
+Los process ids salen siempre de la config, nunca estan en el codigo.
 
 No hay (a proposito): Windows Service, base local, scheduler, cliente MYLOS,
 colas ni observabilidad. Se agregan cuando haya contrato real.
@@ -33,7 +43,8 @@ Todo por variables de entorno. Nunca hay secretos en el codigo ni en el repo.
 | `TANGO_BASE_URL` | si | - | `http://arenales_tango:17000` |
 | `TANGO_API_TOKEN` | si | - | token de Apertura API. **Secreto.** |
 | `TANGO_COMPANY_ID` | si | - | header `Company` (en Perfumum: `2`) |
-| `TANGO_SALES_PROCESS_ID` | si | - | process de la consulta Live (`17839`) |
+| `TANGO_SALES_PROCESS_ID` | para ventas | - | process de la consulta de ventas (`17839`) |
+| `TANGO_CUSTOMERS_PROCESS_ID` | para clientes | - | process de la consulta de clientes (`17851`) |
 | `TANGO_HTTP_TIMEOUT` | no | `60s` | timeout por request |
 | `TANGO_MAX_RETRIES` | no | `3` | reintentos ante errores transitorios |
 | `TANGO_RETRY_BASE_DELAY` | no | `500ms` | base del backoff exponencial con jitter |
@@ -46,21 +57,32 @@ actual). El entorno real siempre gana sobre el archivo.
 cp .env.example .env    # completar el token; .env esta en .gitignore
 ```
 
+Cada comando exige solo el process que usa: `sync-sales` anda sin el de
+clientes, y viceversa. `sync` exige los dos y falla **antes de salir a la red**
+si falta alguno, nombrando el que falta.
+
 ## Uso
 
 ```bash
-mylos-tango-agent sync-sales --from 01/09/2026 --to 09/09/2026
+mylos-tango-agent sync-customers --from 01/09/2026 --to 09/09/2026
+mylos-tango-agent sync-sales     --from 01/09/2026 --to 09/09/2026
+mylos-tango-agent sync           --from 01/09/2026 --to 09/09/2026
 ```
 
-Opciones de `sync-sales`:
+`sync` corre las dos consultas **en secuencia, nunca en paralelo**: primero
+clientes, despues ventas. Si falla la etapa de clientes, no corre la de ventas
+y el error lo dice explicitamente.
+
+Opciones (las mismas para los tres comandos):
 
 | Flag | Default | Que hace |
 |---|---|---|
 | `--from`, `--to` | - | obligatorias. `DD/MM/AAAA` o `AAAA-MM-DD` |
 | `--page-size` | `500` | filas por pagina |
 | `--max-pages` | `0` | cortar tras N paginas (0 = todas). Util para probar |
-| `--out` | - | **opt-in.** JSONL con una fila por renglon, tal cual la mando Tango. Ver *Datos sensibles* |
-| `--sum-amounts` | `false` | acumular `TOTAL` y `CANTIDAD` en el resumen (numero orientativo) |
+| `--out` | - | **opt-in.** JSONL con una fila por renglon, tal cual la mando Tango. Solo `sync-sales` y `sync-customers`. Ver *Datos sensibles* |
+| `--out-dir` | - | **opt-in.** Solo `sync`: escribe `clientes.jsonl` y `ventas.jsonl` en ese directorio |
+| `--sum-amounts` | `false` | acumular `TOTAL` y `CANTIDAD` en el resumen de ventas (numero orientativo) |
 | `--custom-query` | - | parametro `customQuery` de la consulta Live |
 | `--env-file` | `.env` | archivo de configuracion a precargar si existe |
 | `--timeout` | `0` | limite para toda la corrida (ej: `10m`) |
@@ -78,7 +100,8 @@ mylos-tango-agent sync-sales \
 Salida:
 
 ```
-== Resumen sync-sales ==
+== Resumen ventas ==
+  process            : 17839
   rango consultado   : 01/09/2026 -> 09/09/2026
   paginas leidas     : 3
   filas (renglones)  : 12
@@ -153,10 +176,10 @@ nada ni necesita permisos especiales mas alla de poder salir a la LAN.
 ## Estructura
 
 ```
-cmd/agent/          CLI: flags, subcomandos, impresion del resumen
+cmd/agent/          CLI: flags, subcomandos, impresion de los resumenes
 internal/config/    carga y validacion de configuracion (env / archivo)
 internal/tango/     cliente HTTP de Tango: endpoint, retry, errores tipados
-internal/sync/      recorrido de paginas, resumen, volcado JSONL
+internal/sync/      paginate() generico + FetchSales / FetchCustomers + JSONL
 internal/model/     structs calcados de la respuesta real de Tango
 ```
 
@@ -170,9 +193,10 @@ internal/model/     structs calcados de la respuesta real de Tango
 
 ### Datos sensibles
 
-`--out` es **opt-in** y nunca se activa solo. El JSONL que genera contiene datos
-reales de negocio: razon social del cliente, nombre del vendedor, articulos,
-cantidades e importes. Es PII y es informacion comercial.
+`--out` y `--out-dir` son **opt-in** y nunca se activan solos. El JSONL que
+generan contiene datos reales de negocio: razon social del cliente, nombre del
+vendedor, articulos, cantidades e importes, y la ficha completa de clientes.
+Es PII y es informacion comercial.
 
 - No lo dejes en un directorio compartido ni lo mandes por chat/mail.
 - No lo commitees: `*.jsonl` esta en `.gitignore`.
@@ -208,4 +232,7 @@ cantidades e importes. Es PII y es informacion comercial.
    trata como string opaco; no se convierte a tiempo hasta saber que representa.
 5. **Semantica de `TOTAL`**: no esta confirmado si incluye impuestos ni si las NC
    vienen en negativo. Por eso la suma esta apagada por defecto.
-6. **Contrato MYLOS**: no existe todavia. No hay ni un stub.
+6. **Columnas de la consulta de clientes**: no modelamos ninguna. Las filas se
+   guardan como el JSON original (`model.RawRow`), porque cerrar un struct a
+   ciegas pierde datos en silencio. Se tipean cuando veamos un JSONL real.
+7. **Contrato MYLOS**: no existe todavia. No hay ni un stub.

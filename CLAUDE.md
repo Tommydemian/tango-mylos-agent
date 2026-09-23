@@ -19,11 +19,18 @@ Servidor Tango (Perfumum):
 - puerto: `17000`
 - Company: `2`
 
-Consulta Tango Live con Apertura API:
-- nombre: "Detalle de comprobantes"
-- process id: `17839`
+Consultas Tango Live con Apertura API, validadas contra el Tango real. Mismo
+endpoint las dos: lo unico que cambia es el `process`.
+
+VENTAS - "Detalle de comprobantes", process `17839`
 - **devuelve UNA FILA POR RENGLON** de comprobante (varias filas comparten `NRO_COMPROBANTE`)
 - mas adelante se le van a agregar `COD_FAMILIA` / `FAMILIA`
+
+CLIENTES - process `17851`
+- **no modelamos ninguna columna todavia**: no vimos una respuesta real
+
+Los process ids salen de config (`TANGO_SALES_PROCESS_ID`,
+`TANGO_CUSTOMERS_PROCESS_ID`). Nunca hardcodearlos.
 
 Endpoint:
 
@@ -74,8 +81,16 @@ Respuesta real confirmada:
 
 ## Estado
 
-**FASE 1 terminada: solo lector de Tango.** `sync-sales` lee un rango, pagina
-hasta `hasNextPage=false`, valida `succeeded`, resume y opcionalmente escribe JSONL.
+**FASE 1: solo lector de Tango.** Tres comandos:
+
+- `sync-sales` - consulta de ventas
+- `sync-customers` - consulta de clientes
+- `sync` - las dos **en secuencia: clientes primero, ventas despues**. Nunca en
+  paralelo. Exige los dos process ids y falla antes de salir a la red si falta
+  alguno. Si la etapa de clientes falla, no corre la de ventas.
+
+Todos paginan hasta `hasNextPage=false`, validan `succeeded`, resumen y
+opcionalmente escriben JSONL (`--out`, o `--out-dir` en `sync`).
 
 **NO existe integracion con MYLOS** y no hay que inventarla. Cuando aparezca el
 contrato real se agrega `internal/mylos/`.
@@ -86,11 +101,16 @@ scheduler, colas, observabilidad. Se agregan cuando el problema exista.
 ## Estructura
 
 ```
-cmd/agent/          CLI (flags, subcomandos, resumen)
+cmd/agent/          CLI (flags, subcomandos, resumenes)
 internal/config/    config por env/archivo + validacion. Config.LogValue() redacta el token
+                    SalesProcessID() / CustomersProcessID(): cada comando pide el que usa
 internal/tango/     cliente HTTP: GetApiLiveQueryData[T], retry/backoff, errores tipados
-internal/sync/      recorrido de paginas, Summary, JSONLWriter
-internal/model/     Envelope[T] / Page[T] / SalesLine, calcados de la respuesta real
+internal/sync/      paginate[T]() generico (el loop de paginas, uno solo para todos)
+                    FetchSales -> SalesSummary; FetchCustomers -> Summary; JSONLWriter
+internal/model/     Envelope[T] / Page[T] / SalesLine / RawRow
+
+Agregar una consulta Live nueva = un process id en config + una FetchX que
+llame a paginate. No hace falta tocar el cliente HTTP ni el paginador.
 ```
 
 Errores tipados en `internal/tango/errors.go`: `HTTPError` (status no-2xx),
@@ -115,6 +135,9 @@ Se reintenta transporte, 5xx, 429 y 408. No se reintenta el resto de 4xx,
 - **No agregar campos al modelo que no vinieron del server.** Si Tango suma
   `COD_FAMILIA`/`FAMILIA`, primero verlos en un JSONL real y despues tipearlos.
   Mientras tanto `SalesLine.Raw` ya los conserva.
+- **Clientes va como `RawRow` a proposito.** No cerrar un struct de clientes
+  hasta haber visto un JSONL real: un struct a ciegas descarta columnas en
+  silencio. El sink recibe `json.RawMessage`, no filas tipadas.
 - **Tests sin Tango real**: todo con `httptest`. `go test ./...` tiene que pasar
   offline.
 - **Sin dependencias externas.** No tener `go.sum` es una feature: el `.exe` se
