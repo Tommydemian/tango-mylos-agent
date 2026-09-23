@@ -96,7 +96,7 @@ func bindCommon(fs *flag.FlagSet) *commonFlags {
 	fs.StringVar(&cf.to, "to", "", "fecha hasta (DD/MM/AAAA o AAAA-MM-DD) [obligatoria]")
 	fs.IntVar(&cf.pageSize, "page-size", 500, "filas por pagina")
 	fs.IntVar(&cf.maxPages, "max-pages", 0, "cortar despues de N paginas (0 = todas)")
-	fs.StringVar(&cf.customQuery, "custom-query", "", "parametro customQuery de la consulta Live (opcional)")
+	fs.StringVar(&cf.customQuery, "custom-query", "", "override del customQuery; si no se pasa, se usa el ..._CUSTOM_QUERY_ID del entorno")
 	fs.StringVar(&cf.envFile, "env-file", ".env", "archivo de configuracion a precargar (si existe)")
 	fs.StringVar(&cf.logLevel, "log-level", "info", "debug|info|warn|error")
 	fs.StringVar(&cf.logFormat, "log-format", "text", "text|json")
@@ -157,17 +157,48 @@ func newSession(cf *commonFlags) (*session, error) {
 	return &session{cfg: cfg, log: log, client: client, ctx: ctx, stop: stop, from: from, to: to}, nil
 }
 
-// options arma las Options de una consulta para el process indicado.
-func (s *session) options(processID string, cf *commonFlags) sync.Options {
+// consulta identifica una lectura concreta: que process y con que schema.
+// Los dos salen de la config (o del flag); nunca estan en el codigo.
+type consulta struct {
+	processID   string
+	customQuery string
+}
+
+// options arma las Options de una consulta.
+func (s *session) options(q consulta, cf *commonFlags) sync.Options {
 	return sync.Options{
-		ProcessID:   processID,
+		ProcessID:   q.processID,
 		FromDate:    s.from.Format(s.cfg.DateFormat),
 		ToDate:      s.to.Format(s.cfg.DateFormat),
 		PageSize:    cf.pageSize,
 		MaxPages:    cf.maxPages,
-		CustomQuery: cf.customQuery,
+		CustomQuery: q.customQuery,
 		SumAmounts:  cf.sumAmounts,
 	}
+}
+
+// resolveCustomQuery aplica la precedencia:
+//
+//	--custom-query explicito  >  CUSTOM_QUERY_ID del env  >  vacio
+//
+// "explicito" es haberlo escrito en la linea de comandos, aunque sea vacio:
+// --custom-query "" es una forma valida de pedir la consulta sin schema
+// custom, incluso si el entorno define uno.
+func resolveCustomQuery(fs *flag.FlagSet, cf *commonFlags, desdeEnv string) string {
+	if flagExplicito(fs, "custom-query") {
+		return cf.customQuery
+	}
+	return desdeEnv
+}
+
+func flagExplicito(fs *flag.FlagSet, nombre string) bool {
+	visto := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == nombre {
+			visto = true
+		}
+	})
+	return visto
 }
 
 // openSink abre el JSONL de salida si se pidio. Devuelve siempre un close().
@@ -212,13 +243,15 @@ func runSyncSales(args []string) error {
 	if err != nil {
 		return err
 	}
+	q := consulta{processID, resolveCustomQuery(fs, cf, s.cfg.TangoSalesCustomQueryID)}
+
 	sink, closeSink, err := s.openSink(*out)
 	if err != nil {
 		return err
 	}
 	defer closeSink()
 
-	return s.ventas(processID, cf, sink, *out)
+	return s.ventas(q, cf, sink, *out)
 }
 
 func runSyncCustomers(args []string) error {
@@ -244,13 +277,15 @@ func runSyncCustomers(args []string) error {
 	if err != nil {
 		return err
 	}
+	q := consulta{processID, resolveCustomQuery(fs, cf, s.cfg.TangoCustomersCustomQueryID)}
+
 	sink, closeSink, err := s.openSink(*out)
 	if err != nil {
 		return err
 	}
 	defer closeSink()
 
-	return s.clientes(processID, cf, sink, *out)
+	return s.clientes(q, cf, sink, *out)
 }
 
 func runSync(args []string) error {
@@ -281,6 +316,11 @@ func runSync(args []string) error {
 		return fmt.Errorf("sync necesita los dos process ids configurados:\n%w", err)
 	}
 
+	// Cada dataset resuelve su propio custom query. Un --custom-query explicito
+	// aplica a los dos: es un override manual para una corrida puntual.
+	qClientes := consulta{customersID, resolveCustomQuery(fs, cf, s.cfg.TangoCustomersCustomQueryID)}
+	qVentas := consulta{salesID, resolveCustomQuery(fs, cf, s.cfg.TangoSalesCustomQueryID)}
+
 	var outCustomers, outSales string
 	if *outDir != "" {
 		outCustomers = filepath.Join(*outDir, "clientes.jsonl")
@@ -288,10 +328,10 @@ func runSync(args []string) error {
 	}
 
 	// Secuencial y a proposito: primero clientes, despues ventas.
-	if err := s.etapaClientes(customersID, cf, outCustomers); err != nil {
+	if err := s.etapaClientes(qClientes, cf, outCustomers); err != nil {
 		return fmt.Errorf("sync: fallo la etapa de clientes, no se corrieron las ventas: %w", err)
 	}
-	if err := s.etapaVentas(salesID, cf, outSales); err != nil {
+	if err := s.etapaVentas(qVentas, cf, outSales); err != nil {
 		return fmt.Errorf("sync: los clientes se leyeron bien pero fallo la etapa de ventas: %w", err)
 	}
 	return nil
@@ -299,28 +339,29 @@ func runSync(args []string) error {
 
 // etapaClientes / etapaVentas envuelven una etapa de `sync` con su sink propio,
 // de modo que el archivo se cierre antes de arrancar la etapa siguiente.
-func (s *session) etapaClientes(processID string, cf *commonFlags, out string) error {
+func (s *session) etapaClientes(q consulta, cf *commonFlags, out string) error {
 	sink, closeSink, err := s.openSink(out)
 	if err != nil {
 		return err
 	}
 	defer closeSink()
-	return s.clientes(processID, cf, sink, out)
+	return s.clientes(q, cf, sink, out)
 }
 
-func (s *session) etapaVentas(processID string, cf *commonFlags, out string) error {
+func (s *session) etapaVentas(q consulta, cf *commonFlags, out string) error {
 	sink, closeSink, err := s.openSink(out)
 	if err != nil {
 		return err
 	}
 	defer closeSink()
-	return s.ventas(processID, cf, sink, out)
+	return s.ventas(q, cf, sink, out)
 }
 
-func (s *session) clientes(processID string, cf *commonFlags, sink sync.Sink, out string) error {
-	opts := s.options(processID, cf)
+func (s *session) clientes(q consulta, cf *commonFlags, sink sync.Sink, out string) error {
+	opts := s.options(q, cf)
 	s.log.Info("leyendo clientes",
 		slog.String("process", opts.ProcessID),
+		slog.String("custom_query", opts.CustomQuery),
 		slog.String("from_date", opts.FromDate),
 		slog.String("to_date", opts.ToDate),
 		slog.Int("page_size", opts.PageSize),
@@ -337,10 +378,11 @@ func (s *session) clientes(processID string, cf *commonFlags, sink sync.Sink, ou
 	return nil
 }
 
-func (s *session) ventas(processID string, cf *commonFlags, sink sync.Sink, out string) error {
-	opts := s.options(processID, cf)
+func (s *session) ventas(q consulta, cf *commonFlags, sink sync.Sink, out string) error {
+	opts := s.options(q, cf)
 	s.log.Info("leyendo ventas",
 		slog.String("process", opts.ProcessID),
+		slog.String("custom_query", opts.CustomQuery),
 		slog.String("from_date", opts.FromDate),
 		slog.String("to_date", opts.ToDate),
 		slog.Int("page_size", opts.PageSize),
@@ -362,6 +404,7 @@ func printSalesSummary(s sync.SalesSummary, opts sync.Options, out string) {
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "== Resumen ventas ==")
 	fmt.Fprintf(stdout, "  process            : %s\n", opts.ProcessID)
+	fmt.Fprintf(stdout, "  custom query       : %s\n", orGuion(opts.CustomQuery))
 	fmt.Fprintf(stdout, "  rango consultado   : %s -> %s\n", opts.FromDate, opts.ToDate)
 	fmt.Fprintf(stdout, "  paginas leidas     : %d\n", s.Pages)
 	fmt.Fprintf(stdout, "  filas (renglones)  : %d\n", s.Rows)
@@ -391,6 +434,7 @@ func printCustomersSummary(s sync.Summary, opts sync.Options, out string) {
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "== Resumen clientes ==")
 	fmt.Fprintf(stdout, "  process            : %s\n", opts.ProcessID)
+	fmt.Fprintf(stdout, "  custom query       : %s\n", orGuion(opts.CustomQuery))
 	fmt.Fprintf(stdout, "  rango consultado   : %s -> %s\n", opts.FromDate, opts.ToDate)
 	fmt.Fprintf(stdout, "  paginas leidas     : %d\n", s.Pages)
 	fmt.Fprintf(stdout, "  filas              : %d\n", s.Rows)

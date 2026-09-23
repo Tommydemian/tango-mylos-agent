@@ -23,13 +23,16 @@ Opcionalmente vuelca las filas a un JSONL para inspeccion manual.
 Hay dos consultas Live configuradas, ambas contra el **mismo endpoint**: lo
 unico que cambia es el `process`.
 
-| Comando | Consulta | Process (Perfumum) |
-|---|---|---|
-| `sync-sales` | ventas, una fila por renglon de comprobante | `17839` |
-| `sync-customers` | clientes | `17851` |
-| `sync` | las dos, en secuencia: **clientes y despues ventas** | ambos |
+| Comando | Consulta | Process (Perfumum) | customQuery |
+|---|---|---|---|
+| `sync-sales` | ventas, una fila por renglon de comprobante | `17839` | `9` |
+| `sync-customers` | clientes | `17851` | `10` |
+| `sync` | las dos, en secuencia: **clientes y despues ventas** | ambos | ambos |
 
-Los process ids salen siempre de la config, nunca estan en el codigo.
+Los process ids y los customQuery salen siempre de la config, nunca estan en
+el codigo. El `customQuery` selecciona el schema guardado en "Mis consultas"
+de Tango: el 9 agrega a ventas columnas como `COD_CLIENTE` y
+`DESCRIPCION_ADICIONAL`.
 
 No hay (a proposito): Windows Service, base local, scheduler, cliente MYLOS,
 colas ni observabilidad. Se agregan cuando haya contrato real.
@@ -44,7 +47,9 @@ Todo por variables de entorno. Nunca hay secretos en el codigo ni en el repo.
 | `TANGO_API_TOKEN` | si | - | token de Apertura API. **Secreto.** |
 | `TANGO_COMPANY_ID` | si | - | header `Company` (en Perfumum: `2`) |
 | `TANGO_SALES_PROCESS_ID` | para ventas | - | process de la consulta de ventas (`17839`) |
+| `TANGO_SALES_CUSTOM_QUERY_ID` | no | vacio | customQuery de ventas (`9`) |
 | `TANGO_CUSTOMERS_PROCESS_ID` | para clientes | - | process de la consulta de clientes (`17851`) |
+| `TANGO_CUSTOMERS_CUSTOM_QUERY_ID` | no | vacio | customQuery de clientes (`10`) |
 | `TANGO_HTTP_TIMEOUT` | no | `60s` | timeout por request |
 | `TANGO_MAX_RETRIES` | no | `3` | reintentos ante errores transitorios |
 | `TANGO_RETRY_BASE_DELAY` | no | `500ms` | base del backoff exponencial con jitter |
@@ -56,6 +61,19 @@ actual). El entorno real siempre gana sobre el archivo.
 ```bash
 cp .env.example .env    # completar el token; .env esta en .gitignore
 ```
+
+### Precedencia del customQuery
+
+```
+--custom-query explicito   >   ..._CUSTOM_QUERY_ID del entorno   >   vacio
+```
+
+Pasarlo en la linea de comandos gana siempre, **aunque sea vacio**:
+`--custom-query ""` corre la consulta con su schema por defecto aunque el
+entorno defina uno. Si no se pasa el flag, se usa la variable del dataset
+correspondiente. Si tampoco esta, el parametro `customQuery` no viaja en la
+URL y la consulta corre igual. En `sync`, un `--custom-query` explicito aplica
+a las dos etapas.
 
 Cada comando exige solo el process que usa: `sync-sales` anda sin el de
 clientes, y viceversa. `sync` exige los dos y falla **antes de salir a la red**
@@ -83,7 +101,7 @@ Opciones (las mismas para los tres comandos):
 | `--out` | - | **opt-in.** JSONL con una fila por renglon, tal cual la mando Tango. Solo `sync-sales` y `sync-customers`. Ver *Datos sensibles* |
 | `--out-dir` | - | **opt-in.** Solo `sync`: escribe `clientes.jsonl` y `ventas.jsonl` en ese directorio |
 | `--sum-amounts` | `false` | acumular `TOTAL` y `CANTIDAD` en el resumen de ventas (numero orientativo) |
-| `--custom-query` | - | parametro `customQuery` de la consulta Live |
+| `--custom-query` | - | override del `customQuery`. Ver *Precedencia* |
 | `--env-file` | `.env` | archivo de configuracion a precargar si existe |
 | `--timeout` | `0` | limite para toda la corrida (ej: `10m`) |
 | `--log-level` | `info` | `debug` muestra cada request |
@@ -102,6 +120,7 @@ Salida:
 ```
 == Resumen ventas ==
   process            : 17839
+  custom query       : 9
   rango consultado   : 01/09/2026 -> 09/09/2026
   paginas leidas     : 3
   filas (renglones)  : 12
@@ -230,9 +249,12 @@ Es PII y es informacion comercial.
    crudo y se muestra tal cual en el error.
 4. **Zona horaria de `FECHA_DE_EMISION`**: viene sin offset (`...T00:00:00`). Se
    trata como string opaco; no se convierte a tiempo hasta saber que representa.
-5. **Semantica de `TOTAL`**: no esta confirmado si incluye impuestos ni si las NC
+5. **El schema de una custom query puede cambiar sin avisar.** Por eso el JSONL
+   guarda el JSON original y no lo que el struct entiende: si manana la
+   consulta 9 suma columnas, aparecen solas en el volcado sin recompilar nada.
+6. **Semantica de `TOTAL`**: no esta confirmado si incluye impuestos ni si las NC
    vienen en negativo. Por eso la suma esta apagada por defecto.
-6. **Columnas de la consulta de clientes**: no modelamos ninguna. Las filas se
+7. **Columnas de la consulta de clientes**: no modelamos ninguna. Las filas se
    guardan como el JSON original (`model.RawRow`), porque cerrar un struct a
    ciegas pierde datos en silencio. Se tipean cuando veamos un JSONL real.
-7. **Contrato MYLOS**: no existe todavia. No hay ni un stub.
+8. **Contrato MYLOS**: no existe todavia. No hay ni un stub.

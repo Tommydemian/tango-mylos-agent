@@ -26,6 +26,12 @@ type Config struct {
 	TangoSalesProcessID     string
 	TangoCustomersProcessID string
 
+	// customQuery de cada consulta: selecciona el schema guardado en
+	// "Mis consultas" de Tango. Pueden estar vacios (la consulta corre con su
+	// schema por defecto). El flag --custom-query los pisa.
+	TangoSalesCustomQueryID     string
+	TangoCustomersCustomQueryID string
+
 	HTTPTimeout    time.Duration
 	MaxRetries     int
 	RetryBaseDelay time.Duration
@@ -53,10 +59,13 @@ func Load() (Config, error) {
 		TangoCompanyID:          strings.TrimSpace(os.Getenv("TANGO_COMPANY_ID")),
 		TangoSalesProcessID:     strings.TrimSpace(os.Getenv("TANGO_SALES_PROCESS_ID")),
 		TangoCustomersProcessID: strings.TrimSpace(os.Getenv("TANGO_CUSTOMERS_PROCESS_ID")),
-		HTTPTimeout:             defaultHTTPTimeout,
-		MaxRetries:              defaultMaxRetries,
-		RetryBaseDelay:          defaultRetryBaseDelay,
-		DateFormat:              defaultDateFormat,
+
+		TangoSalesCustomQueryID:     strings.TrimSpace(os.Getenv("TANGO_SALES_CUSTOM_QUERY_ID")),
+		TangoCustomersCustomQueryID: strings.TrimSpace(os.Getenv("TANGO_CUSTOMERS_CUSTOM_QUERY_ID")),
+		HTTPTimeout:                 defaultHTTPTimeout,
+		MaxRetries:                  defaultMaxRetries,
+		RetryBaseDelay:              defaultRetryBaseDelay,
+		DateFormat:                  defaultDateFormat,
 	}
 
 	var err error
@@ -147,6 +156,8 @@ func (c Config) LogValue() slog.Value {
 		slog.String("tango_company_id", c.TangoCompanyID),
 		slog.String("tango_sales_process_id", c.TangoSalesProcessID),
 		slog.String("tango_customers_process_id", c.TangoCustomersProcessID),
+		slog.String("tango_sales_custom_query_id", c.TangoSalesCustomQueryID),
+		slog.String("tango_customers_custom_query_id", c.TangoCustomersCustomQueryID),
 		slog.String("tango_api_token", "[redacted]"),
 		slog.Duration("http_timeout", c.HTTPTimeout),
 		slog.Int("max_retries", c.MaxRetries),

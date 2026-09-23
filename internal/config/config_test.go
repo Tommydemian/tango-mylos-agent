@@ -13,6 +13,7 @@ func setEnv(t *testing.T, kv map[string]string) {
 	for _, k := range []string{
 		"TANGO_BASE_URL", "TANGO_API_TOKEN", "TANGO_COMPANY_ID",
 		"TANGO_SALES_PROCESS_ID", "TANGO_CUSTOMERS_PROCESS_ID",
+		"TANGO_SALES_CUSTOM_QUERY_ID", "TANGO_CUSTOMERS_CUSTOM_QUERY_ID",
 		"TANGO_HTTP_TIMEOUT", "TANGO_MAX_RETRIES", "TANGO_RETRY_BASE_DELAY", "TANGO_DATE_FORMAT",
 	} {
 		os.Unsetenv(k)
@@ -24,11 +25,13 @@ func setEnv(t *testing.T, kv map[string]string) {
 
 func validEnv() map[string]string {
 	return map[string]string{
-		"TANGO_BASE_URL":             "http://arenales_tango:17000",
-		"TANGO_API_TOKEN":            "secreto",
-		"TANGO_COMPANY_ID":           "2",
-		"TANGO_SALES_PROCESS_ID":     "17839",
-		"TANGO_CUSTOMERS_PROCESS_ID": "17851",
+		"TANGO_BASE_URL":                  "http://arenales_tango:17000",
+		"TANGO_API_TOKEN":                 "secreto",
+		"TANGO_COMPANY_ID":                "2",
+		"TANGO_SALES_PROCESS_ID":          "17839",
+		"TANGO_SALES_CUSTOM_QUERY_ID":     "9",
+		"TANGO_CUSTOMERS_PROCESS_ID":      "17851",
+		"TANGO_CUSTOMERS_CUSTOM_QUERY_ID": "10",
 	}
 }
 
@@ -215,5 +218,40 @@ func TestLoadEnvFile_LineaInvalida(t *testing.T) {
 	}
 	if err := LoadEnvFile(path, true); err == nil {
 		t.Error("esperaba error de parseo")
+	}
+}
+
+func TestCustomQueryIDs(t *testing.T) {
+	setEnv(t, validEnv())
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.TangoSalesCustomQueryID != "9" {
+		t.Errorf("sales custom query = %q", c.TangoSalesCustomQueryID)
+	}
+	if c.TangoCustomersCustomQueryID != "10" {
+		t.Errorf("customers custom query = %q", c.TangoCustomersCustomQueryID)
+	}
+}
+
+// Los custom query son opcionales: sin ellos la config carga igual y cada
+// consulta corre con su schema por defecto.
+func TestCustomQueryIDs_SonOpcionales(t *testing.T) {
+	env := validEnv()
+	delete(env, "TANGO_SALES_CUSTOM_QUERY_ID")
+	delete(env, "TANGO_CUSTOMERS_CUSTOM_QUERY_ID")
+	setEnv(t, env)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load no deberia exigir los custom query: %v", err)
+	}
+	if c.TangoSalesCustomQueryID != "" || c.TangoCustomersCustomQueryID != "" {
+		t.Errorf("deberian quedar vacios: %q / %q", c.TangoSalesCustomQueryID, c.TangoCustomersCustomQueryID)
+	}
+	// Y los process ids siguen resolviendose normalmente.
+	if _, err := c.SalesProcessID(); err != nil {
+		t.Errorf("SalesProcessID: %v", err)
 	}
 }

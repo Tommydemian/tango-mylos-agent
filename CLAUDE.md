@@ -22,15 +22,25 @@ Servidor Tango (Perfumum):
 Consultas Tango Live con Apertura API, validadas contra el Tango real. Mismo
 endpoint las dos: lo unico que cambia es el `process`.
 
-VENTAS - "Detalle de comprobantes", process `17839`
+VENTAS - "Detalle de comprobantes", process `17839`, customQuery `9`
+- la custom query 9 es el schema guardado en "Mis consultas": agrega columnas
+  como `COD_CLIENTE` y `DESCRIPCION_ADICIONAL` a las de siempre
 - **devuelve UNA FILA POR RENGLON** de comprobante (varias filas comparten `NRO_COMPROBANTE`)
 - mas adelante se le van a agregar `COD_FAMILIA` / `FAMILIA`
 
-CLIENTES - process `17851`
-- **no modelamos ninguna columna todavia**: no vimos una respuesta real
+CLIENTES - process `17851`, customQuery `10`
+- **no modelamos ninguna columna**: el payload observado trae COD_CLIENTE,
+  RAZON_SOCIAL, TIPO_DE_DOCUMENTO, NUMERO, ACTIVIDAD, DOMICILIO, LOCALIDAD,
+  TELEFONO, FAX, MOVIL, EMAIL, PAGINA_WEB, CONTACTO_HABITUAL,
+  TELEFONO_DEL_CONTACTO, EMAIL_CONTACTO, OBS_CONTACTO, CONDICION_DE_IVA,
+  DESC_RUBRO. **No asumir que esa lista sea exhaustiva ni estable.**
 
-Los process ids salen de config (`TANGO_SALES_PROCESS_ID`,
-`TANGO_CUSTOMERS_PROCESS_ID`). Nunca hardcodearlos.
+Los process ids y los customQuery salen de config (`TANGO_SALES_PROCESS_ID`,
+`TANGO_SALES_CUSTOM_QUERY_ID`, `TANGO_CUSTOMERS_PROCESS_ID`,
+`TANGO_CUSTOMERS_CUSTOM_QUERY_ID`). Nunca hardcodearlos.
+
+Precedencia del customQuery: `--custom-query` explicito (aunque sea vacio) >
+variable del dataset > vacio (el param no viaja).
 
 Endpoint:
 
@@ -135,6 +145,9 @@ Se reintenta transporte, 5xx, 429 y 408. No se reintenta el resto de 4xx,
 - **No agregar campos al modelo que no vinieron del server.** Si Tango suma
   `COD_FAMILIA`/`FAMILIA`, primero verlos en un JSONL real y despues tipearlos.
   Mientras tanto `SalesLine.Raw` ya los conserva.
+- **El JSONL siempre guarda el JSON original, no el struct.** El schema de una
+  custom query puede cambiar sin avisar; el volcado tiene que reflejar lo que
+  mando Tango, no lo que el agente entiende.
 - **Clientes va como `RawRow` a proposito.** No cerrar un struct de clientes
   hasta haber visto un JSONL real: un struct a ciegas descarta columnas en
   silencio. El sink recibe `json.RawMessage`, no filas tipadas.
