@@ -48,14 +48,20 @@ type Batch struct {
 	Rows          []json.RawMessage `json:"rows"`
 }
 
-// BatchResponse es lo que contesta MYLOS.
+// BatchResponse es lo que contesta MYLOS (TangoBatchAck del backend).
+// Los cuatro campos vienen siempre y nunca null.
 //
-// duplicate=true con stored=false NO es un error: significa que el backend ya
+// Stored es la CANTIDAD de filas almacenadas, no un flag: vale 0 o Received,
+// nunca un parcial (el batch entra entero o no entra).
+//
+// duplicate=true con stored=0 NO es un error: significa que el backend ya
 // tenia ese batch (idempotencia por payload_hash) y lo descarto.
+//
+// Los dos endpoints devuelven este mismo objeto.
 type BatchResponse struct {
 	BatchID   int64 `json:"batch_id"`
 	Received  int   `json:"received"`
-	Stored    bool  `json:"stored"`
+	Stored    int   `json:"stored"`
 	Duplicate bool  `json:"duplicate"`
 }
 
@@ -176,6 +182,9 @@ func (c *Client) doOnce(ctx context.Context, target string, body []byte, attempt
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// El body se guarda crudo y truncado, sin deserializar: el "detail"
+		// de FastAPI es string en 401/413 pero ARRAY en 422, asi que exigirle
+		// un schema unico romperia justo en las validaciones.
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodySnippet))
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, &HTTPError{

@@ -185,9 +185,14 @@ func nuevoMylosFalso(t *testing.T) *mylosFalso {
 			return
 		}
 		rows, _ := b["rows"].([]any)
+		// Contrato real: stored es cantidad de filas (0 o received).
+		stored := len(rows)
+		if dup {
+			stored = 0
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"batch_id": 4821, "received": len(rows),
-			"stored": !dup, "duplicate": dup,
+			"stored": stored, "duplicate": dup,
 		})
 	}))
 	t.Cleanup(m.Server.Close)
@@ -910,7 +915,7 @@ func TestPOST_DuplicateEsExitoYSyncSigue(t *testing.T) {
 	if len(paths) != 2 || paths[0] != pathClientes || paths[1] != pathVentas {
 		t.Errorf("con duplicate sync tiene que completar las dos etapas: %v", paths)
 	}
-	if !strings.Contains(out, "stored / duplicate: 0 / 1") {
+	if !strings.Contains(out, "filas almacenadas : 0") || !strings.Contains(out, "batches duplicados: 1") {
 		t.Errorf("el resumen deberia contar el duplicado:\n%s", out)
 	}
 }
@@ -953,6 +958,7 @@ func TestPOST_PoliticaDeReintentos(t *testing.T) {
 		reintenta bool
 	}{
 		"401": {http.StatusUnauthorized, false},
+		"413": {http.StatusRequestEntityTooLarge, false},
 		"422": {http.StatusUnprocessableEntity, false},
 		"429": {http.StatusTooManyRequests, true},
 		"500": {http.StatusInternalServerError, true},

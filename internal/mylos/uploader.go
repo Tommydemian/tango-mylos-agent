@@ -21,8 +21,8 @@ type Meta struct {
 type Stats struct {
 	Batches     int // batches enviados (paginas no vacias)
 	Rows        int // filas enviadas
-	Stored      int // batches con stored=true
-	Duplicates  int // batches con duplicate=true
+	RowsStored  int // filas almacenadas por MYLOS (suma de stored)
+	Duplicates  int // batches que MYLOS descarto por duplicados
 	LastBatchID int64
 	Elapsed     time.Duration
 }
@@ -74,10 +74,9 @@ func (u *Uploader) SendPage(ctx context.Context, rows []json.RawMessage) error {
 	u.stats.Batches++
 	u.stats.Rows += len(rows)
 	u.stats.LastBatchID = resp.BatchID
-	if resp.Stored {
-		u.stats.Stored++
-	}
-	// duplicate=true es exito: el backend ya tenia este batch.
+	u.stats.RowsStored += resp.Stored
+	// duplicate=true es exito: el backend ya tenia este batch y lo descarto,
+	// asi que stored viene en 0.
 	if resp.Duplicate {
 		u.stats.Duplicates++
 	}
@@ -88,7 +87,7 @@ func (u *Uploader) SendPage(ctx context.Context, rows []json.RawMessage) error {
 		slog.Int("rows_enviadas", len(rows)),
 		slog.Int64("batch_id", resp.BatchID),
 		slog.Int("received", resp.Received),
-		slog.Bool("stored", resp.Stored),
+		slog.Int("stored", resp.Stored),
 		slog.Bool("duplicate", resp.Duplicate),
 		slog.Duration("duracion", elapsed.Round(time.Millisecond)),
 	)

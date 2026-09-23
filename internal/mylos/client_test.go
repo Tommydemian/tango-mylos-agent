@@ -52,7 +52,7 @@ func batchDePrueba() Batch {
 
 func okResponse(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(BatchResponse{
-		BatchID: 123, Received: 1, Stored: true, Duplicate: false,
+		BatchID: 123, Received: 1, Stored: 1, Duplicate: false,
 	})
 }
 
@@ -137,7 +137,7 @@ func TestSendBatch_BaseURLConBarraFinal(t *testing.T) {
 func TestSendBatch_DuplicateEsExito(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(BatchResponse{
-			BatchID: 456, Received: 1, Stored: false, Duplicate: true,
+			BatchID: 456, Received: 1, Stored: 0, Duplicate: true,
 		})
 	}))
 	defer srv.Close()
@@ -146,7 +146,7 @@ func TestSendBatch_DuplicateEsExito(t *testing.T) {
 	if err != nil {
 		t.Fatalf("duplicate no deberia ser error: %v", err)
 	}
-	if !resp.Duplicate || resp.Stored {
+	if !resp.Duplicate || resp.Stored != 0 {
 		t.Errorf("respuesta mal parseada: %+v", resp)
 	}
 	if resp.BatchID != 456 || resp.Received != 1 {
@@ -333,17 +333,15 @@ func TestTargetNoExponeElToken(t *testing.T) {
 	}
 }
 
-// El backend devuelve batch_id como NUMERO, no como string. Este test usa una
-// respuesta calcada de la que dio MYLOS real en la prueba end-to-end: modelar
-// batch_id como string rompia con
-// "json: cannot unmarshal number into Go struct field".
-func TestSendBatch_RespuestaRealDelBackend(t *testing.T) {
-	const body = `{
-  "batch_id": 123,
-  "received": 6,
-  "stored": true,
-  "duplicate": false
-}`
+// --- contrato confirmado del backend (TangoBatchAck) -----------------------
+//
+// Estos cuerpos son exactamente los que devuelve MYLOS. Dos mismatches
+// aparecieron recien en el E2E contra prod (batch_id numerico y stored
+// numerico), asi que el contrato queda fijado con los JSON literales.
+
+// Exito: stored == received, duplicate=false.
+func TestSendBatch_ContratoExito(t *testing.T) {
+	const body = `{"batch_id": 41, "received": 100, "stored": 100, "duplicate": false}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, body)
@@ -354,28 +352,23 @@ func TestSendBatch_RespuestaRealDelBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no se pudo decodificar la respuesta real: %v", err)
 	}
-	if resp.BatchID != 123 {
-		t.Errorf("batch_id = %d, esperaba 123", resp.BatchID)
+	if resp.BatchID != 41 {
+		t.Errorf("batch_id = %d, esperaba 41", resp.BatchID)
 	}
-	if resp.Received != 6 {
-		t.Errorf("received = %d, esperaba 6", resp.Received)
+	if resp.Received != 100 {
+		t.Errorf("received = %d, esperaba 100", resp.Received)
 	}
-	if !resp.Stored {
-		t.Error("stored deberia ser true")
+	if resp.Stored != 100 {
+		t.Errorf("stored = %d, esperaba 100 (es cantidad de filas, no un flag)", resp.Stored)
 	}
 	if resp.Duplicate {
 		t.Error("duplicate deberia ser false")
 	}
 }
 
-// La misma forma, pero con el batch ya ingestado: sigue siendo exito.
-func TestSendBatch_RespuestaRealConDuplicate(t *testing.T) {
-	const body = `{
-  "batch_id": 124,
-  "received": 6,
-  "stored": false,
-  "duplicate": true
-}`
+// Reenvio identico: mismo batch_id, stored=0, duplicate=true. Sigue siendo exito.
+func TestSendBatch_ContratoDuplicado(t *testing.T) {
+	const body = `{"batch_id": 41, "received": 100, "stored": 0, "duplicate": true}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, body)
@@ -386,14 +379,31 @@ func TestSendBatch_RespuestaRealConDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("duplicate no deberia ser error: %v", err)
 	}
-	if resp.BatchID != 124 {
-		t.Errorf("batch_id = %d, esperaba 124", resp.BatchID)
+	if resp.BatchID != 41 {
+		t.Errorf("batch_id = %d, esperaba 41 (el mismo del original)", resp.BatchID)
 	}
-	if resp.Received != 6 {
-		t.Errorf("received = %d, esperaba 6", resp.Received)
+	if resp.Received != 100 {
+		t.Errorf("received = %d, esperaba 100", resp.Received)
 	}
-	if resp.Stored || !resp.Duplicate {
-		t.Errorf("stored/duplicate = %v/%v, esperaba false/true", resp.Stored, resp.Duplicate)
+	if resp.Stored != 0 {
+		t.Errorf("stored = %d, esperaba 0", resp.Stored)
+	}
+	if !resp.Duplicate {
+		t.Error("duplicate deberia ser true")
+	}
+}
+
+// stored como bool era el modelo viejo: ahora es una respuesta invalida.
+func TestSendBatch_StoredBoolEsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"batch_id":41,"received":100,"stored":true,"duplicate":false}`)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL, nil).SendBatch(context.Background(), DatasetSales, batchDePrueba())
+	var respErr *ResponseError
+	if !errors.As(err, &respErr) {
+		t.Fatalf("esperaba *ResponseError, es %T: %v", err, err)
 	}
 }
 
@@ -409,5 +419,109 @@ func TestSendBatch_BatchIDStringEsError(t *testing.T) {
 	var respErr *ResponseError
 	if !errors.As(err, &respErr) {
 		t.Fatalf("esperaba *ResponseError, es %T: %v", err, err)
+	}
+}
+
+// --- errores reales del backend --------------------------------------------
+//
+// El "detail" de FastAPI es un string en 401/413 pero un ARRAY en 422. El
+// cliente NO lo deserializa: guarda el body crudo y truncado. Estos tests
+// fijan que las tres formas se manejen igual y que ninguna se reintente.
+
+func TestSendBatch_ErroresDelBackend(t *testing.T) {
+	casos := []struct {
+		nombre      string
+		status      int
+		body        string
+		headers     map[string]string
+		enElMensaje string
+	}{
+		{
+			nombre:      "401 detail string",
+			status:      http.StatusUnauthorized,
+			body:        `{"detail":"Token invalido o revocado"}`,
+			headers:     map[string]string{"WWW-Authenticate": "Bearer"},
+			enElMensaje: "Token invalido o revocado",
+		},
+		{
+			nombre:      "413 detail string",
+			status:      http.StatusRequestEntityTooLarge,
+			body:        `{"detail":"Batch demasiado grande"}`,
+			enElMensaje: "Batch demasiado grande",
+		},
+		{
+			// El caso que rompe cualquier modelo con Detail string.
+			nombre: "422 detail array",
+			status: http.StatusUnprocessableEntity,
+			body: `{"detail":[{"type":"missing","loc":["body","company_id"],` +
+				`"msg":"Field required","input":{}}]}`,
+			enElMensaje: "Field required",
+		},
+	}
+
+	for _, caso := range casos {
+		t.Run(caso.nombre, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				for k, v := range caso.headers {
+					w.Header().Set(k, v)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(caso.status)
+				fmt.Fprint(w, caso.body)
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(t, srv.URL, func(c *config.Config) {
+				c.MylosMaxRetries = 3
+			}).SendBatch(context.Background(), DatasetSales, batchDePrueba())
+
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) {
+				t.Fatalf("esperaba *HTTPError, es %T: %v", err, err)
+			}
+			if httpErr.StatusCode != caso.status {
+				t.Errorf("status = %d, esperaba %d", httpErr.StatusCode, caso.status)
+			}
+			// El body llega crudo, sin haber intentado darle un schema.
+			if httpErr.Body != caso.body {
+				t.Errorf("body = %q, esperaba %q", httpErr.Body, caso.body)
+			}
+			if !strings.Contains(err.Error(), caso.enElMensaje) {
+				t.Errorf("el error deberia mostrar el detalle del backend: %v", err)
+			}
+			if n := calls.Load(); n != 1 {
+				t.Errorf("%d no se reintenta; hubo %d requests", caso.status, n)
+			}
+		})
+	}
+}
+
+// Ningun secreto sale por el error, cualquiera sea la forma del body.
+func TestSendBatch_ErroresDelBackendNoFiltranElToken(t *testing.T) {
+	bodies := map[string]string{
+		"401":                  `{"detail":"Bearer ` + tokenDePrueba + ` rechazado"}`,
+		"422 con detail array": `{"detail":[{"msg":"token ` + tokenDePrueba + `"}]}`,
+	}
+	for nombre, body := range bodies {
+		t.Run(nombre, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(w, body)
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(t, srv.URL, nil).SendBatch(context.Background(), DatasetSales, batchDePrueba())
+			if err == nil {
+				t.Fatal("esperaba error")
+			}
+			if strings.Contains(err.Error(), tokenDePrueba) {
+				t.Fatalf("el error filtro el token: %v", err)
+			}
+			if !strings.Contains(err.Error(), "[redacted]") {
+				t.Errorf("deberia venir enmascarado: %v", err)
+			}
+		})
 	}
 }
