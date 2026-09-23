@@ -75,6 +75,10 @@ Uso:
 
   sync corre las dos consultas en secuencia: primero clientes, despues ventas.
 
+  En vez de --from/--to se puede usar --days-back N, que arma el rango solo:
+  desde el inicio del dia de hace N dias hasta hoy, en hora local.
+  Ej: mylos-tango-agent sync --days-back 1
+
 Configuracion: variables de entorno (ver .env.example).
 `)
 }
@@ -83,6 +87,7 @@ Configuracion: variables de entorno (ver .env.example).
 type commonFlags struct {
 	from        string
 	to          string
+	daysBack    int
 	pageSize    int
 	maxPages    int
 	customQuery string
@@ -97,6 +102,8 @@ func bindCommon(fs *flag.FlagSet) *commonFlags {
 	cf := &commonFlags{}
 	fs.StringVar(&cf.from, "from", "", "fecha desde (DD/MM/AAAA o AAAA-MM-DD) [obligatoria]")
 	fs.StringVar(&cf.to, "to", "", "fecha hasta (DD/MM/AAAA o AAAA-MM-DD) [obligatoria]")
+	fs.IntVar(&cf.daysBack, "days-back", sinDaysBack,
+		"rango automatico: desde el inicio del dia de hace N dias hasta hoy, en hora local. Alternativa a --from/--to")
 	fs.IntVar(&cf.pageSize, "page-size", 500, "filas por pagina")
 	fs.IntVar(&cf.maxPages, "max-pages", 0, "cortar despues de N paginas (0 = todas)")
 	fs.StringVar(&cf.customQuery, "custom-query", "", "override del customQuery; si no se pasa, se usa el ..._CUSTOM_QUERY_ID del entorno")
@@ -120,19 +127,9 @@ type session struct {
 }
 
 func newSession(cf *commonFlags) (*session, error) {
-	if cf.from == "" || cf.to == "" {
-		return nil, errors.New("--from y --to son obligatorios")
-	}
-	from, err := parseCLIDate(cf.from)
+	from, to, aviso, err := resolverRango(cf, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("--from: %w", err)
-	}
-	to, err := parseCLIDate(cf.to)
-	if err != nil {
-		return nil, fmt.Errorf("--to: %w", err)
-	}
-	if to.Before(from) {
-		return nil, errors.New("--to no puede ser anterior a --from")
+		return nil, err
 	}
 
 	if err := config.LoadEnvFile(cf.envFile, false); err != nil {
@@ -144,6 +141,9 @@ func newSession(cf *commonFlags) (*session, error) {
 	}
 
 	log := newLogger(cf.logLevel, cf.logFormat)
+	if aviso != "" {
+		log.Warn(aviso)
+	}
 	log.Debug("configuracion cargada", slog.Any("config", cfg))
 
 	client, err := tango.New(cfg, log)
@@ -555,6 +555,66 @@ func orGuion(v string) string {
 		return "-"
 	}
 	return v
+}
+
+// sinDaysBack es el valor por defecto de --days-back: no lo pidieron.
+const sinDaysBack = -1
+
+// resolverRango decide el rango de la corrida.
+//
+//	--from/--to explicitos   >   --days-back N   >   error
+//
+// Con --days-back N el rango va desde el inicio del dia de hace N dias hasta
+// ahora, SIEMPRE en la hora local de la maquina: es la hora con la que factura
+// Tango, no UTC. Con N=1 eso es "ayer y hoy".
+//
+// Devuelve un aviso (no error) cuando se pasaron los dos modos a la vez, para
+// que quede claro cual gano.
+func resolverRango(cf *commonFlags, ahora time.Time) (desde, hasta time.Time, aviso string, err error) {
+	tieneFrom, tieneTo := cf.from != "", cf.to != ""
+
+	// Uno solo de los dos no alcanza, aunque venga --days-back: mezclar los
+	// modos en silencio es peor que fallar.
+	if tieneFrom != tieneTo {
+		falta, dado := "--to", "--from"
+		if tieneTo {
+			falta, dado = "--from", "--to"
+		}
+		return time.Time{}, time.Time{}, "", fmt.Errorf(
+			"se paso %s pero falta %s: van siempre juntos (o usa --days-back N para el rango automatico)", dado, falta)
+	}
+
+	switch {
+	case tieneFrom && tieneTo:
+		desde, err = parseCLIDate(cf.from)
+		if err != nil {
+			return time.Time{}, time.Time{}, "", fmt.Errorf("--from: %w", err)
+		}
+		hasta, err = parseCLIDate(cf.to)
+		if err != nil {
+			return time.Time{}, time.Time{}, "", fmt.Errorf("--to: %w", err)
+		}
+		if hasta.Before(desde) {
+			return time.Time{}, time.Time{}, "", errors.New("--to no puede ser anterior a --from")
+		}
+		if cf.daysBack != sinDaysBack {
+			aviso = "se pasaron --from/--to y --days-back a la vez: mandan --from/--to, se ignora --days-back"
+		}
+		return desde, hasta, aviso, nil
+
+	case cf.daysBack != sinDaysBack:
+		if cf.daysBack < 0 {
+			return time.Time{}, time.Time{}, "", fmt.Errorf("--days-back no puede ser negativo (es %d)", cf.daysBack)
+		}
+		// Inicio del dia de hace N dias, en la zona horaria local.
+		inicio := ahora.AddDate(0, 0, -cf.daysBack)
+		desde = time.Date(inicio.Year(), inicio.Month(), inicio.Day(), 0, 0, 0, 0, ahora.Location())
+		return desde, ahora, "", nil
+
+	default:
+		return time.Time{}, time.Time{}, "", errors.New(
+			"hay que indicar el rango: --from y --to, o --days-back N")
+	}
 }
 
 // parseCLIDate acepta DD/MM/AAAA (como se usa en Tango) y AAAA-MM-DD.

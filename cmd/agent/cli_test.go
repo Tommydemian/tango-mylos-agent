@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -1133,5 +1134,97 @@ func TestPOST_UnBatchPorPagina(t *testing.T) {
 	}
 	if !strings.Contains(out, "MYLOS batches   : 3 (5 filas)") {
 		t.Errorf("el resumen deberia reportar 3 batches / 5 filas:\n%s", out)
+	}
+}
+
+// --- rango automatico end-to-end -------------------------------------------
+
+// --days-back arma el rango solo y llega tanto a Tango como a MYLOS.
+func TestDaysBack_LlegaATangoYAMylos(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{
+		"17839": filasVentas(), "17851": filasClientes(),
+	})
+	my := nuevoMylosFalso(t)
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync", "--days-back", "1", "--env-file", envFile})
+	})
+	if err != nil {
+		t.Fatalf("sync --days-back: %v\n%s", err, out)
+	}
+
+	// El rango esperado se calcula igual que el agente: hora local.
+	ahora := time.Now()
+	ayer := ahora.AddDate(0, 0, -1).Format("02/01/2006")
+	hoy := ahora.Format("02/01/2006")
+
+	for _, path := range []string{pathClientes, pathVentas} {
+		in := my.primeraA(t, path)
+		if in.batch["from_date"] != ayer {
+			t.Errorf("%s: from_date = %v, esperaba %s", path, in.batch["from_date"], ayer)
+		}
+		if in.batch["to_date"] != hoy {
+			t.Errorf("%s: to_date = %v, esperaba %s", path, in.batch["to_date"], hoy)
+		}
+	}
+	// Y el mismo rango se uso para los dos datasets.
+	if !strings.Contains(out, ayer+" -> "+hoy) {
+		t.Errorf("el resumen deberia mostrar el rango calculado (%s -> %s):\n%s", ayer, hoy, out)
+	}
+}
+
+// --from/--to le ganan a --days-back, y queda avisado.
+func TestDaysBack_FromToTienenPrioridadEnElComando(t *testing.T) {
+	srv := nuevoTangoFalso(t, map[string][]map[string]any{"17851": filasClientes()})
+	my := nuevoMylosFalso(t)
+	envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+	out, err := capturar(t, func() error {
+		return run([]string{"sync-customers", "--from", "22/09/2026", "--to", "23/09/2026",
+			"--days-back", "30", "--env-file", envFile})
+	})
+	if err != nil {
+		t.Fatalf("sync-customers: %v\n%s", err, out)
+	}
+
+	in := my.primeraA(t, pathClientes)
+	if in.batch["from_date"] != "22/09/2026" || in.batch["to_date"] != "23/09/2026" {
+		t.Errorf("rango = %v -> %v, deberian mandar --from/--to",
+			in.batch["from_date"], in.batch["to_date"])
+	}
+	if !strings.Contains(out, "se ignora --days-back") {
+		t.Errorf("deberia avisar que --days-back se ignora:\n%s", out)
+	}
+}
+
+// Sin rango, o con medio rango, el comando falla antes de tocar nada.
+func TestDaysBack_ErroresDeRango(t *testing.T) {
+	casos := map[string][]string{
+		"sin nada":                {"sync"},
+		"solo from":               {"sync", "--from", "22/09/2026"},
+		"solo to":                 {"sync", "--to", "23/09/2026"},
+		"solo from con days-back": {"sync", "--from", "22/09/2026", "--days-back", "1"},
+		"days-back negativo":      {"sync", "--days-back", "-1"},
+	}
+	for nombre, args := range casos {
+		t.Run(nombre, func(t *testing.T) {
+			srv := nuevoTangoFalso(t, map[string][]map[string]any{"17851": filasClientes()})
+			my := nuevoMylosFalso(t)
+			envFile := entorno(t, srv.URL, conMylos(t, my, nil))
+
+			_, err := capturar(t, func() error {
+				return run(append(args, "--env-file", envFile))
+			})
+			if err == nil {
+				t.Fatal("esperaba error")
+			}
+			if n := len(srv.vistos()); n != 0 {
+				t.Errorf("no deberia haber consultado Tango: %d requests", n)
+			}
+			if n := len(my.recibidas()); n != 0 {
+				t.Errorf("no deberia haber posteado nada: %d requests", n)
+			}
+		})
 	}
 }

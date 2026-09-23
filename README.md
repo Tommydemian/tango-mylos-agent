@@ -94,7 +94,35 @@ si falta alguno, nombrando el que falta.
 mylos-tango-agent sync-customers --from 01/09/2026 --to 09/09/2026
 mylos-tango-agent sync-sales     --from 01/09/2026 --to 09/09/2026
 mylos-tango-agent sync           --from 01/09/2026 --to 09/09/2026
+
+# rango automatico, sin escribir fechas
+mylos-tango-agent sync --days-back 1
 ```
+
+### Rango automatico
+
+`--days-back N` arma el rango solo: **desde el inicio del dia de hace N dias
+hasta ahora**, en la **hora local de la maquina** (que es con la que factura
+Tango, no UTC).
+
+| Flag | Rango |
+|---|---|
+| `--days-back 0` | hoy |
+| `--days-back 1` | ayer y hoy |
+| `--days-back 7` | los ultimos 8 dias |
+
+Precedencia:
+
+```
+--from + --to explicitos   >   --days-back N   >   error
+```
+
+- `--from` y `--to` van **siempre juntas**: pasar una sola es error, aunque
+  tambien venga `--days-back`. Los dos modos no se mezclan en silencio.
+- Si se pasan los dos modos, mandan `--from`/`--to` y queda un `WARN` diciendolo.
+- Sin ninguno de los dos, el comando falla antes de tocar Tango o MYLOS.
+
+El mismo rango se aplica a clientes y a ventas.
 
 `sync` corre las dos consultas **en secuencia, nunca en paralelo**: primero
 clientes, despues ventas. Si falla la etapa de clientes, no corre la de ventas
@@ -104,7 +132,8 @@ Opciones (las mismas para los tres comandos):
 
 | Flag | Default | Que hace |
 |---|---|---|
-| `--from`, `--to` | - | obligatorias. `DD/MM/AAAA` o `AAAA-MM-DD` |
+| `--from`, `--to` | - | rango explicito, `DD/MM/AAAA` o `AAAA-MM-DD`. Van **siempre juntas** |
+| `--days-back` | - | rango automatico: desde el inicio del dia de hace N dias hasta hoy. Ver *Rango automatico* |
 | `--page-size` | `500` | filas por pagina |
 | `--max-pages` | `0` | cortar tras N paginas (0 = todas). Util para probar |
 | `--out` | - | **opt-in.** JSONL con una fila por renglon, tal cual la mando Tango. Solo `sync-sales` y `sync-customers`. Ver *Datos sensibles* |

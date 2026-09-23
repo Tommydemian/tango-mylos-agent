@@ -43,6 +43,10 @@ Los process ids y los customQuery salen de config (`TANGO_SALES_PROCESS_ID`,
 Precedencia del customQuery: `--custom-query` explicito (aunque sea vacio) >
 variable del dataset > vacio (el param no viaja).
 
+Precedencia del rango: `--from` + `--to` > `--days-back N` > error. `--from` y
+`--to` van siempre juntas (una sola es error). `--days-back N` = inicio del dia
+de hace N dias hasta ahora, en **hora local**, nunca UTC.
+
 Endpoint:
 
 ```
