@@ -52,7 +52,7 @@ func batchDePrueba() Batch {
 
 func okResponse(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(BatchResponse{
-		BatchID: "b-123", Received: 1, Stored: true, Duplicate: false,
+		BatchID: 123, Received: 1, Stored: true, Duplicate: false,
 	})
 }
 
@@ -137,7 +137,7 @@ func TestSendBatch_BaseURLConBarraFinal(t *testing.T) {
 func TestSendBatch_DuplicateEsExito(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(BatchResponse{
-			BatchID: "b-dup", Received: 1, Stored: false, Duplicate: true,
+			BatchID: 456, Received: 1, Stored: false, Duplicate: true,
 		})
 	}))
 	defer srv.Close()
@@ -149,7 +149,7 @@ func TestSendBatch_DuplicateEsExito(t *testing.T) {
 	if !resp.Duplicate || resp.Stored {
 		t.Errorf("respuesta mal parseada: %+v", resp)
 	}
-	if resp.BatchID != "b-dup" || resp.Received != 1 {
+	if resp.BatchID != 456 || resp.Received != 1 {
 		t.Errorf("respuesta mal parseada: %+v", resp)
 	}
 }
@@ -203,7 +203,7 @@ func TestSendBatch_Reintenta429Y5xx(t *testing.T) {
 			if err != nil {
 				t.Fatalf("esperaba exito tras reintentos: %v", err)
 			}
-			if resp.BatchID != "b-123" {
+			if resp.BatchID != 123 {
 				t.Errorf("respuesta = %+v", resp)
 			}
 			if n := calls.Load(); n != 3 {
@@ -237,7 +237,7 @@ func TestSendBatch_ReintentaErrorDeRed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("un corte de conexion deberia reintentarse: %v", err)
 	}
-	if resp.BatchID != "b-123" {
+	if resp.BatchID != 123 {
 		t.Errorf("respuesta = %+v", resp)
 	}
 	if n := calls.Load(); n < 2 {
@@ -330,5 +330,84 @@ func TestTargetNoExponeElToken(t *testing.T) {
 	}
 	if target != "https://api.mylos.app/integrations/tango/sales/batch" {
 		t.Errorf("target = %s", target)
+	}
+}
+
+// El backend devuelve batch_id como NUMERO, no como string. Este test usa una
+// respuesta calcada de la que dio MYLOS real en la prueba end-to-end: modelar
+// batch_id como string rompia con
+// "json: cannot unmarshal number into Go struct field".
+func TestSendBatch_RespuestaRealDelBackend(t *testing.T) {
+	const body = `{
+  "batch_id": 123,
+  "received": 6,
+  "stored": true,
+  "duplicate": false
+}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL, nil).SendBatch(context.Background(), DatasetSales, batchDePrueba())
+	if err != nil {
+		t.Fatalf("no se pudo decodificar la respuesta real: %v", err)
+	}
+	if resp.BatchID != 123 {
+		t.Errorf("batch_id = %d, esperaba 123", resp.BatchID)
+	}
+	if resp.Received != 6 {
+		t.Errorf("received = %d, esperaba 6", resp.Received)
+	}
+	if !resp.Stored {
+		t.Error("stored deberia ser true")
+	}
+	if resp.Duplicate {
+		t.Error("duplicate deberia ser false")
+	}
+}
+
+// La misma forma, pero con el batch ya ingestado: sigue siendo exito.
+func TestSendBatch_RespuestaRealConDuplicate(t *testing.T) {
+	const body = `{
+  "batch_id": 124,
+  "received": 6,
+  "stored": false,
+  "duplicate": true
+}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(t, srv.URL, nil).SendBatch(context.Background(), DatasetCustomers, batchDePrueba())
+	if err != nil {
+		t.Fatalf("duplicate no deberia ser error: %v", err)
+	}
+	if resp.BatchID != 124 {
+		t.Errorf("batch_id = %d, esperaba 124", resp.BatchID)
+	}
+	if resp.Received != 6 {
+		t.Errorf("received = %d, esperaba 6", resp.Received)
+	}
+	if resp.Stored || !resp.Duplicate {
+		t.Errorf("stored/duplicate = %v/%v, esperaba false/true", resp.Stored, resp.Duplicate)
+	}
+}
+
+// Un batch_id string ahora es una respuesta invalida: mejor fallar claro que
+// volver a adivinar el contrato.
+func TestSendBatch_BatchIDStringEsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"batch_id":"b-123","received":1,"stored":true,"duplicate":false}`)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv.URL, nil).SendBatch(context.Background(), DatasetSales, batchDePrueba())
+	var respErr *ResponseError
+	if !errors.As(err, &respErr) {
+		t.Fatalf("esperaba *ResponseError, es %T: %v", err, err)
 	}
 }

@@ -53,10 +53,10 @@ type Batch struct {
 // duplicate=true con stored=false NO es un error: significa que el backend ya
 // tenia ese batch (idempotencia por payload_hash) y lo descarto.
 type BatchResponse struct {
-	BatchID   string `json:"batch_id"`
-	Received  int    `json:"received"`
-	Stored    bool   `json:"stored"`
-	Duplicate bool   `json:"duplicate"`
+	BatchID   int64 `json:"batch_id"`
+	Received  int   `json:"received"`
+	Stored    bool  `json:"stored"`
+	Duplicate bool  `json:"duplicate"`
 }
 
 // Client habla con la API de MYLOS. Es seguro para uso concurrente.

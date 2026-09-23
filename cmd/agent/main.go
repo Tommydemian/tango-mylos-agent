@@ -506,7 +506,7 @@ func printEnvio(env mylos.Stats) {
 	fmt.Fprintf(stdout, "  -> MYLOS batches   : %d (%d filas)\n", env.Batches, env.Rows)
 	if env.Batches > 0 {
 		fmt.Fprintf(stdout, "     stored / duplicate: %d / %d\n", env.Stored, env.Duplicates)
-		fmt.Fprintf(stdout, "     ultimo batch_id   : %s\n", orGuion(env.LastBatchID))
+		fmt.Fprintf(stdout, "     ultimo batch_id   : %d\n", env.LastBatchID)
 		fmt.Fprintf(stdout, "     tiempo de envio   : %s\n", env.Elapsed.Round(time.Millisecond))
 	}
 }

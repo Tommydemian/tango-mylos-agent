@@ -186,7 +186,7 @@ func nuevoMylosFalso(t *testing.T) *mylosFalso {
 		}
 		rows, _ := b["rows"].([]any)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"batch_id": "batch-abc-123", "received": len(rows),
+			"batch_id": 4821, "received": len(rows),
 			"stored": !dup, "duplicate": dup,
 		})
 	}))
@@ -841,7 +841,7 @@ func TestPOST_EndpointMetadataYAuth(t *testing.T) {
 			if n := len(my.recibidas()); n != 1 {
 				t.Errorf("esperaba 1 POST, hubo %d", n)
 			}
-			if !strings.Contains(out, "batch-abc-123") {
+			if !strings.Contains(out, "4821") {
 				t.Errorf("el resumen deberia mostrar el batch_id:\n%s", out)
 			}
 		})

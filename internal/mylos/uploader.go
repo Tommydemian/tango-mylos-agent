@@ -23,7 +23,7 @@ type Stats struct {
 	Rows        int // filas enviadas
 	Stored      int // batches con stored=true
 	Duplicates  int // batches con duplicate=true
-	LastBatchID string
+	LastBatchID int64
 	Elapsed     time.Duration
 }
 
@@ -86,7 +86,7 @@ func (u *Uploader) SendPage(ctx context.Context, rows []json.RawMessage) error {
 		slog.String("dataset", string(u.dataset)),
 		slog.String("target", u.client.Target(u.dataset)),
 		slog.Int("rows_enviadas", len(rows)),
-		slog.String("batch_id", resp.BatchID),
+		slog.Int64("batch_id", resp.BatchID),
 		slog.Int("received", resp.Received),
 		slog.Bool("stored", resp.Stored),
 		slog.Bool("duplicate", resp.Duplicate),
@@ -96,7 +96,7 @@ func (u *Uploader) SendPage(ctx context.Context, rows []json.RawMessage) error {
 		u.log.Warn("mylos: received no coincide con las filas enviadas",
 			slog.Int("enviadas", len(rows)),
 			slog.Int("received", resp.Received),
-			slog.String("batch_id", resp.BatchID),
+			slog.Int64("batch_id", resp.BatchID),
 		)
 	}
 	return nil

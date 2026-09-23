@@ -15,7 +15,7 @@ func TestUploader_UnBatchPorPagina(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&b)
 		recibidos = append(recibidos, b)
 		_ = json.NewEncoder(w).Encode(BatchResponse{
-			BatchID: "b-1", Received: len(b.Rows), Stored: true,
+			BatchID: 123, Received: len(b.Rows), Stored: true,
 		})
 	}))
 	defer srv.Close()
@@ -60,7 +60,7 @@ func TestUploader_PaginaVaciaNoPostea(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		_ = json.NewEncoder(w).Encode(BatchResponse{BatchID: "b", Stored: true})
+		_ = json.NewEncoder(w).Encode(BatchResponse{BatchID: 123, Stored: true})
 	}))
 	defer srv.Close()
 
@@ -82,7 +82,7 @@ func TestUploader_PaginaVaciaNoPostea(t *testing.T) {
 func TestUploader_ContabilizaDuplicados(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(BatchResponse{
-			BatchID: "b-dup", Received: 1, Stored: false, Duplicate: true,
+			BatchID: 456, Received: 1, Stored: false, Duplicate: true,
 		})
 	}))
 	defer srv.Close()
@@ -95,8 +95,8 @@ func TestUploader_ContabilizaDuplicados(t *testing.T) {
 	if st.Batches != 1 || st.Duplicates != 1 || st.Stored != 0 {
 		t.Errorf("stats = %+v", st)
 	}
-	if st.LastBatchID != "b-dup" {
-		t.Errorf("batch id = %q", st.LastBatchID)
+	if st.LastBatchID != 456 {
+		t.Errorf("batch id = %d", st.LastBatchID)
 	}
 }
 
